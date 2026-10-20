@@ -1,6 +1,12 @@
 # gesture-control configuration.
 # Anything you delete from this file falls back to the built-in default.
 # Tip: watch the numbers in the preview window while tuning.
+#
+# New builds overwrite this file. Put your own changes in config/local.yaml
+# instead (same structure, only the keys you change); it is loaded last and
+# never shipped in a build, e.g.:
+#   pinch:
+#     start: 0.32
 
 camera:
   index: 0              # /dev/video0
@@ -45,6 +51,7 @@ cursor:
     min_cutoff: 1.0     # lower = steadier when still, but more lag
     beta: 10.0          # higher = less lag on fast moves, but more jitter
     d_cutoff: 1.0
+  abs_scale: [1.0, 1.0] # set by --calibrate (saved in config/calibration.yaml, which wins)
   deadzone: 0.0015      # ignore cursor changes smaller than this (fraction of screen)
   relative_gain: 1800   # relative mode only: counts per crossing of the region
   click_freeze_ms: 180  # hold the cursor still briefly when a click starts

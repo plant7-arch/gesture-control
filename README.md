@@ -7,8 +7,24 @@ tracking and a virtual uinput device for input, so it works on Wayland (Ubuntu 2
 
 ```bash
 uv run gesture-control --pointer-test   # 1. check the virtual mouse (no camera)
-uv run gesture-control                  # 2. full app with preview window
+uv run gesture-control --calibrate      # 2. map the screen edges (once per display setup)
+uv run gesture-control                  # 3. full app with preview window
 ```
+
+### Calibration (absolute mode)
+
+GNOME can spread the virtual mouse's range over an area larger than the visible screen
+(fractional display scaling does this), so the cursor hits the right/bottom edge long
+before your hand reaches the far side of the box. `--calibrate` slowly moves the cursor
+towards each edge; press Enter the moment it touches. The result is saved to
+`config/calibration.yaml`. Re-run it after changing display scaling, resolution or
+monitors, and delete that file to undo it. `--pointer-test` then visits all four screen
+corners so you can check the result.
+
+### Your own settings
+
+Builds overwrite `config/gestures.yaml`. Put your changes in `config/local.yaml`
+(same structure, only the keys you change). It is loaded last and never shipped in a build.
 
 Useful options:
 
@@ -16,6 +32,7 @@ Useful options:
 |---|---|
 | `--dry-run` | Track and recognize gestures, but print actions instead of moving the mouse |
 | `--mode relative` | Use relative (mouse-like) cursor movement instead of absolute |
+| `--calibrate` | Find the screen edges for absolute mode, then exit |
 | `--start-paused` | Start paused; hold a fist ~1 s to begin |
 | `--no-preview` | Run without the camera window (Ctrl+C to quit) |
 | `-v` | Print every action to the terminal |
@@ -54,9 +71,12 @@ All settings are in `config/gestures.yaml`, with comments. The preview shows the
 ## Layout
 
 ```
-config/gestures.yaml          settings
+config/gestures.yaml          settings (overwritten by new builds)
+config/local.yaml             your overrides (optional, never overwritten)
+config/calibration.yaml       written by --calibrate
 src/gesture_control/
   app.py          main loop and CLI
+  calibrate.py    screen-edge calibration (--calibrate)
   capture.py      threaded camera reader (newest frame only)
   tracker.py      MediaPipe Hand Landmarker wrapper
   features.py     finger states, pinch distances, pose classification

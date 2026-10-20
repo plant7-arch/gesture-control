@@ -1,0 +1,5 @@
+# Written by: gesture-control --calibrate
+# Fraction of the virtual mouse range where the cursor reaches the right / bottom
+# edge of the screen. Delete this file to undo the calibration.
+cursor:
+  abs_scale: [1.0000, 1.0000]

@@ -29,6 +29,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--start-paused", action="store_true", help="start with gestures paused")
     p.add_argument("--pointer-test", action="store_true",
                    help="move the cursor around without the camera, then exit")
+    p.add_argument("--calibrate", action="store_true",
+                   help="find where the screen edges are (absolute mode), then exit")
     p.add_argument("-v", "--verbose", action="store_true", help="print every action")
     return p.parse_args(argv)
 
@@ -46,15 +48,20 @@ def _make_pointer(mode: str, dry_run: bool) -> VirtualPointer:
         sys.exit("/dev/uinput not found. Run: sudo modprobe uinput")
 
 
-def pointer_test(mode: str, dry_run: bool) -> None:
-    what = "visit the centre and four points around it" if mode == "absolute" else "trace a small square"
+def pointer_test(mode: str, dry_run: bool, abs_scale=(1.0, 1.0)) -> None:
+    if mode == "absolute":
+        what = ("visit the centre and then each corner of the screen. If it stops short of "
+                "or overshoots the right/bottom corners, run --calibrate")
+    else:
+        what = "trace a small square"
     print(f"Pointer test ({mode}): the cursor should {what}.")
     ptr = _make_pointer(mode, dry_run)
     try:
         if mode == "absolute":
-            for x, y in [(0.5, 0.5), (0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75), (0.5, 0.5)]:
-                ptr.move_abs(x, y)
-                time.sleep(0.6)
+            sx, sy = abs_scale
+            for x, y in [(0.5, 0.5), (0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.5, 0.5)]:
+                ptr.move_abs(x * sx, y * sy)
+                time.sleep(0.8)
         else:
             for dx, dy in [(15, 0), (0, 15), (-15, 0), (0, -15)]:
                 for _ in range(20):
@@ -81,8 +88,13 @@ def main(argv=None) -> None:
     if args.start_paused:
         cfg["pause"]["start_paused"] = True
 
+    if args.calibrate:
+        from .calibrate import run_calibration
+
+        run_calibration(args.dry_run, args.config)
+        return
     if args.pointer_test:
-        pointer_test(cfg["cursor"]["mode"], args.dry_run)
+        pointer_test(cfg["cursor"]["mode"], args.dry_run, cfg["cursor"]["abs_scale"])
         return
 
     from pathlib import Path
@@ -109,6 +121,11 @@ def main(argv=None) -> None:
         w, h, fps_set = camera.actual
         print(f"Camera /dev/video{camera.index}: {w}x{h} @ {fps_set:.0f} fps | "
               f"cursor: {cfg['cursor']['mode']} | {'DRY RUN' if args.dry_run else 'live'}")
+        if cfg["_loaded"]:
+            print("Also loaded: " + ", ".join(f"config/{n}" for n in cfg["_loaded"]))
+        if cfg["cursor"]["mode"] == "absolute" and "calibration.yaml" not in cfg["_loaded"]:
+            print("Tip: if the cursor reaches the right/bottom screen edge too early, "
+                  "run: uv run gesture-control --calibrate")
         tracker = HandTracker(cfg["tracker"])
         controller = GestureController(cfg, pointer)
         if cfg["preview"]["enabled"]:

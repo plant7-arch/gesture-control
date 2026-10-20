@@ -116,6 +116,7 @@ class GestureController:
         r = cc["region"]
         self.region = (float(r["x_min"]), float(r["x_max"]), float(r["y_min"]), float(r["y_max"]))
         self.abs_mode = cc["mode"] == "absolute"
+        self.abs_scale = tuple(cc.get("abs_scale", (1.0, 1.0)))
         self.deadzone = float(cc["deadzone"])
         self.rel_gain = float(cc["relative_gain"])
         self.freeze_s = float(cc["click_freeze_ms"]) / 1000.0
@@ -274,7 +275,9 @@ class GestureController:
             if self._last_sent is not None:
                 if max(abs(fx - self._last_sent[0]), abs(fy - self._last_sent[1])) < self.deadzone:
                     return
-            self.pointer.move_abs(fx, fy)
+            # abs_scale (from --calibrate) shrinks the output range so the region's
+            # far edges land exactly on the screen's right/bottom edges.
+            self.pointer.move_abs(fx * self.abs_scale[0], fy * self.abs_scale[1])
             self._last_sent = (float(fx), float(fy))
         else:
             if self._prev_mapped is None:
