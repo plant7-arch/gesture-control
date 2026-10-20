@@ -63,6 +63,12 @@ All settings are in `config/gestures.yaml`, with comments. The preview shows the
 - **L / R bars**: thumb–index and thumb–middle pinch distances. The white ticks are
   `pinch.start` and `pinch.release`. If clicks don't register, raise `start`; if they
   fire on their own, lower it.
+- **facing**: how squarely your hand faces the camera (1 = square on, 0 = edge-on).
+  New pinches only start above `pinch.min_facing` (0.6); below it the bars turn grey,
+  because a turned hand makes fingertips line up and look touching when they aren't.
+  If real pinches get blocked, lower it a little; if false clicks still happen, raise it.
+- **Pinch arming**: a pinch only counts after the bar has been seen open (past the
+  right tick) while your hand faces the camera, then closes. Start from an open hand.
 - **pose (raw)**: the debounced pose, with the raw per-frame pose in brackets when they differ.
 - **fps / ms**: processing rate and camera-to-action latency.
 - Cursor too jittery when still: lower `cursor.filter.min_cutoff`. Laggy on fast moves:

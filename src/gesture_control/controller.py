@@ -41,6 +41,8 @@ class Status:
     left_down: bool = False
     pinch_index: float | None = None
     pinch_middle: float | None = None
+    facing: float | None = None
+    pinch_blocked: bool = False  # hand turned too far for a reliable pinch
     cursor: tuple[float, float] | None = None  # normalized screen position (absolute mode)
     fist_progress: float = 0.0
     last_action: str = ""
@@ -73,31 +75,43 @@ class Debouncer:
 
 
 class PinchDetector:
-    """Hysteresis + confirmation frames. Returns (active, started, ended)."""
+    """Pinch with hysteresis, confirmation frames and arming. Returns (active, started, ended).
+
+    Arming: a pinch can only start after the fingers have been seen clearly apart
+    (above `release`) while `ok` holds. So fingers that merely appear to touch as the
+    hand turns into view never fire; a real pinch is an observed closing motion.
+    """
 
     def __init__(self, start: float, release: float, confirm_frames: int):
         self.start, self.release_t = float(start), float(release)
         self.confirm = max(1, int(confirm_frames))
         self.active = False
+        self.armed = False
         self._count = 0
 
-    def update(self, ratio: float, reach_ok: bool) -> tuple[bool, bool, bool]:
+    def update(self, ratio: float, ok: bool) -> tuple[bool, bool, bool]:
         if not self.active:
-            if ratio < self.start and reach_ok:
+            if not ok:
+                self.armed, self._count = False, 0
+                return False, False, False
+            if ratio > self.release_t:
+                self.armed = True
+            if self.armed and ratio < self.start:
                 self._count += 1
                 if self._count >= self.confirm:
-                    self.active, self._count = True, 0
+                    self.active, self.armed, self._count = True, False, 0
                     return True, True, False
             else:
                 self._count = 0
             return False, False, False
         if ratio > self.release_t:
             self.active = False
+            self.armed = True  # fingers are apart again: ready for the next pinch
             return False, False, True
         return True, False, False
 
     def reset(self) -> None:
-        self.active, self._count = False, 0
+        self.active, self.armed, self._count = False, False, 0
 
 
 class GestureController:
@@ -110,6 +124,7 @@ class GestureController:
         self.left = PinchDetector(pc["start"], pc["release"], pc["confirm_frames"])
         self.right = PinchDetector(pc["start"], pc["release"], pc["confirm_frames"])
         self.min_reach = float(pc["min_finger_reach"])
+        self.min_facing = float(pc["min_facing"])
 
         self.cursor_filter = OneEuroFilter(**cc["filter"])
         self.scroll_filter = OneEuroFilter(**sc["filter"])
@@ -188,14 +203,21 @@ class GestureController:
             return self._status(st)
 
         # Pinches (always tracked so hysteresis state stays consistent).
-        _, l_start, l_end = self.left.update(feats.pinch_index, feats.reach_index >= self.min_reach)
+        # A new pinch may only start while the hand faces the camera; an ongoing one
+        # (e.g. a drag) is not cut off when the hand turns.
+        facing_ok = feats.facing >= self.min_facing
+        st.facing, st.pinch_blocked = feats.facing, not facing_ok
+        _, l_start, l_end = self.left.update(
+            feats.pinch_index, facing_ok and feats.reach_index >= self.min_reach)
         _, r_start, _ = self.right.update(
             feats.pinch_middle,
-            feats.reach_middle >= self.min_reach and not self.left.active,
+            facing_ok and feats.reach_middle >= self.min_reach and not self.left.active,
         )
 
         # Mode selection.
-        dragging = self.pointer.is_down("left")
+        # A pinch confirmed this frame counts as a drag, so it can't lose a race with a
+        # pose change (e.g. a tight pinch briefly reading as a fist).
+        dragging = self.pointer.is_down("left") or (self.mode == Mode.MOVE and l_start)
         if dragging:
             target = Mode.MOVE
         elif pose == POINT:

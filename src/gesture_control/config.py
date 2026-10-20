@@ -41,8 +41,9 @@ DEFAULTS: dict[str, Any] = {
     "pinch": {
         "start": 0.28,
         "release": 0.42,
-        "confirm_frames": 2,
+        "confirm_frames": 3,
         "min_finger_reach": 1.05,
+        "min_facing": 0.6,
     },
     "cursor": {
         "mode": "absolute",

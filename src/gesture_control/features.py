@@ -48,6 +48,7 @@ class HandFeatures:
     reach_index: float   # dist(wrist, index tip) / palm size
     reach_middle: float  # dist(wrist, middle tip) / palm size
     palm_size: float
+    facing: float        # 1 = palm (or back of hand) square to the camera, 0 = edge-on
     pose: str
 
 
@@ -81,6 +82,13 @@ def compute_features(pts: np.ndarray, extend_ratio: float, curl_ratio: float) ->
         extended[name] = r > extend_ratio
         curled[name] = r < curl_ratio
 
+    # Palm normal from wrist, index base and pinky base. Its depth component says how
+    # squarely the hand faces the camera; edge-on, fingertips can line up along the
+    # camera's line of sight and look touching when they're not.
+    normal = np.cross(pts[INDEX_MCP] - wrist, pts[PINKY_MCP] - wrist)
+    n_len = float(np.linalg.norm(normal))
+    facing = abs(float(normal[2])) / n_len if n_len > 1e-9 else 0.0
+
     return HandFeatures(
         finger_ratio=ratio,
         extended=extended,
@@ -90,6 +98,7 @@ def compute_features(pts: np.ndarray, extend_ratio: float, curl_ratio: float) ->
         reach_index=_d(wrist, pts[INDEX_TIP]) / palm,
         reach_middle=_d(wrist, pts[MIDDLE_TIP]) / palm,
         palm_size=palm,
+        facing=facing,
         pose=classify_pose(extended, curled),
     )
 

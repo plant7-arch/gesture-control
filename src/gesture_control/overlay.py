@@ -82,7 +82,7 @@ class Overlay:
                 cv2.circle(frame, a, 14, RED, 3, cv2.LINE_AA)
 
         # Info panel
-        _shade(frame, 0, 0, 250, 150)
+        _shade(frame, 0, 0, 250, 172)
         mode = "PAUSED" if st.paused else st.mode.value.upper()
         _text(frame, mode, (10, 28), colour, 0.8, 2)
         fps_txt = f"{fps:4.1f} fps" if fps > 0 else "-- fps"
@@ -91,10 +91,15 @@ class Overlay:
         _text(frame, hand_txt if st.hand else "no hand", (10, 74), WHITE if st.hand else GREY)
         if handedness and st.hand:
             _text(frame, handedness, (190, 74), GREY)
-        self._meter(frame, "L", st.pinch_index, 96)
-        self._meter(frame, "R", st.pinch_middle, 116)
+        self._meter(frame, "L", st.pinch_index, 96, st.pinch_blocked)
+        self._meter(frame, "R", st.pinch_middle, 116, st.pinch_blocked)
+        if st.facing is not None:
+            if st.pinch_blocked:
+                _text(frame, f"facing {st.facing:.2f}  turn palm to camera", (10, 144), ORANGE, 0.45)
+            else:
+                _text(frame, f"facing {st.facing:.2f}", (10, 144), GREY, 0.45)
         if st.last_action:
-            _text(frame, st.last_action, (10, 140), GREY, 0.45)
+            _text(frame, st.last_action, (10, 164), GREY, 0.45)
 
         # Bottom band: fist-hold progress (pause/resume), or the paused hint.
         if st.fist_progress > 0 or st.paused:
@@ -109,8 +114,10 @@ class Overlay:
             _text(frame, "PAUSED - hold a fist or press p to resume", (20, h - 18), RED, 0.55)
         return frame
 
-    def _meter(self, frame, label: str, value: float | None, y: int) -> None:
-        """Pinch distance bar: fills as fingers close; ticks mark start/release."""
+    def _meter(self, frame, label: str, value: float | None, y: int,
+               blocked: bool = False) -> None:
+        """Pinch distance bar: fills as fingers close; ticks mark start/release.
+        Grey while pinches are blocked because the hand is turned away."""
         x, width = 30, 150
         _text(frame, label, (10, y + 9), GREY, 0.45)
         cv2.rectangle(frame, (x, y), (x + width, y + 10), GREY, 1)
@@ -118,6 +125,8 @@ class Overlay:
         if value is not None:
             fill = int(width * max(0.0, 1.0 - min(value, top) / top))
             c = RED if value < self.pinch_start else ORANGE if value < self.pinch_release else GREEN
+            if blocked:
+                c = GREY
             cv2.rectangle(frame, (x, y), (x + fill, y + 10), c, -1)
             _text(frame, f"{value:.2f}", (x + width + 8, y + 10), GREY, 0.45)
         for thr in (self.pinch_start, self.pinch_release):
