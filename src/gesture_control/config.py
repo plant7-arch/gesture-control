@@ -46,13 +46,23 @@ DEFAULTS: dict[str, Any] = {
         "min_facing": 0.6,
     },
     "cursor": {
-        "mode": "absolute",
-        "anchor": "index_mcp",
+        "mode": "relative",
+        "anchor": "knuckles",
         "region": {"x_min": 0.2, "x_max": 0.8, "y_min": 0.2, "y_max": 0.7},
         "filter": {"min_cutoff": 1.0, "beta": 10.0, "d_cutoff": 1.0},
         "abs_scale": [1.0, 1.0],
         "deadzone": 0.0015,
-        "relative_gain": 1800,
+        "relative": {
+            "output": "tablet",
+            "gain_slow": 0.05,
+            "gain_fast": 0.4,
+            "speed_slow": 0.6,
+            "speed_fast": 5.0,
+            "min_speed": 0.15,
+            "screen_aspect": 1.6,
+            "mouse_px_per_screen": 1920,
+            "filter": {"min_cutoff": 1.0, "beta": 4.0, "d_cutoff": 1.0},
+        },
         "click_freeze_ms": 180,
     },
     "scroll": {
@@ -119,12 +129,25 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
     if cfg["cursor"]["mode"] not in ("absolute", "relative"):
         raise ValueError("cursor.mode must be 'absolute' or 'relative'")
+    if cfg["cursor"]["relative"]["output"] not in ("tablet", "mouse"):
+        raise ValueError("cursor.relative.output must be 'tablet' or 'mouse'")
+    if cfg["cursor"]["anchor"] not in ("knuckles", "index_mcp", "index_tip", "palm_center"):
+        raise ValueError("cursor.anchor must be knuckles, index_mcp, index_tip or palm_center")
     scale = cfg["cursor"]["abs_scale"]
     if (not isinstance(scale, (list, tuple)) or len(scale) != 2
             or not all(isinstance(v, (int, float)) and 0.1 <= v <= 1.0 for v in scale)):
         raise ValueError("cursor.abs_scale must be two numbers between 0.1 and 1.0")
     cfg["cursor"]["abs_scale"] = [float(scale[0]), float(scale[1])]
     return cfg
+
+
+def pointer_device_mode(cfg: dict[str, Any]) -> str:
+    """Which virtual device the cursor mode needs: relative mode normally drives the
+    absolute (tablet) device with its own cursor; output: mouse uses relative events."""
+    cc = cfg["cursor"]
+    if cc["mode"] == "relative" and cc["relative"]["output"] == "mouse":
+        return "relative"
+    return "absolute"
 
 
 def save_calibration(abs_scale: tuple[float, float], config_path: str | Path | None = None) -> Path:

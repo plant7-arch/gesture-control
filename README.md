@@ -31,7 +31,7 @@ Useful options:
 | Option | What it does |
 |---|---|
 | `--dry-run` | Track and recognize gestures, but print actions instead of moving the mouse |
-| `--mode relative` | Use relative (mouse-like) cursor movement instead of absolute |
+| `--mode absolute` | Hand position = screen position (the default is relative, touchpad-like) |
 | `--calibrate` | Find the screen edges for absolute mode, then exit |
 | `--start-paused` | Start paused; hold a fist ~1 s to begin |
 | `--no-preview` | Run without the camera window (Ctrl+C to quit) |
@@ -52,9 +52,17 @@ In the preview window: `q` / `Esc` quits, `p` toggles pause.
 | Open palm | Neutral: nothing happens |
 | Fist held ~1 s | Pause / resume everything |
 
-The cursor follows the big dot at the base of your index finger, not the fingertip, so
-pinching to click doesn't knock the cursor off target. Only the rectangle drawn in the
-preview maps to the screen, so you don't have to reach the edges of the camera view.
+The cursor works like a touchpad (relative mode, the default): it follows your hand's
+movement, not its position. Move slowly for fine control, flick to cross the screen. When
+you run out of room, open your palm (the cursor stops), move your hand back, and point
+again. Movement is measured in palm lengths, so it feels the same at any distance from
+the camera, and tracking follows the centre of your knuckles (the big dot), which stays
+put when you pinch.
+
+In absolute mode (`--mode absolute`) your hand position maps directly to the screen:
+only the rectangle drawn in the preview maps to the screen.
+
+Both modes drive the calibrated virtual tablet, so run `--calibrate` once either way.
 
 ## Tuning
 
@@ -71,8 +79,11 @@ All settings are in `config/gestures.yaml`, with comments. The preview shows the
   right tick) while your hand faces the camera, then closes. Start from an open hand.
 - **pose (raw)**: the debounced pose, with the raw per-frame pose in brackets when they differ.
 - **fps / ms**: processing rate and camera-to-action latency.
-- Cursor too jittery when still: lower `cursor.filter.min_cutoff`. Laggy on fast moves:
-  raise `cursor.filter.beta`.
+- Relative mode feel (`cursor.relative`): too twitchy for precise aiming, lower
+  `gain_slow`; too much arm movement to cross the screen, raise `gain_fast`. Cursor
+  creeps while your hand is still, raise `min_speed`.
+- Absolute mode: too jittery when still, lower `cursor.filter.min_cutoff`; laggy on fast
+  moves, raise `cursor.filter.beta`.
 
 ## Layout
 

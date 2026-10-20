@@ -42,22 +42,49 @@ pinch:
                           # line up and look touching. Shown as the facing value.
 
 cursor:
-  mode: absolute        # absolute: hand position = screen position
-                        # relative: hand movement = cursor movement (like a mouse)
-  anchor: index_mcp     # index_mcp (steady when pinching) | index_tip | palm_center
+  mode: relative        # relative: works like a touchpad. Slow hand movement = fine
+                        #   control, fast movement = big jumps. To reposition your hand,
+                        #   open your palm (cursor stops), move, then point again.
+                        # absolute: hand position = screen position (box = screen).
+                        #   Simple, but each camera pixel is 5+ screen pixels.
+  anchor: knuckles      # knuckles: average of the 4 knuckles (steadiest; doesn't move
+                        #   when you pinch) | index_mcp | index_tip | palm_center
+  click_freeze_ms: 180  # hold the cursor still briefly when a click starts
+
+  relative:
+    # Hand movement is measured in palm lengths (wrist to middle knuckle, about 9 cm),
+    # so it feels the same however far you sit from the camera.
+    # Gain = screen widths of cursor travel per palm length of hand travel. It rises
+    # smoothly from gain_slow to gain_fast as hand speed goes from speed_slow to
+    # speed_fast (palm lengths per second).
+    gain_slow: 0.05     # lower = more precise when moving slowly (0.05 = 96 px on 1920)
+    gain_fast: 0.4      # higher = less arm movement to cross the screen
+    speed_slow: 0.6
+    speed_fast: 5.0
+    min_speed: 0.15     # slower than this counts as holding still (hides jitter)
+    screen_aspect: 1.6  # screen width / height (1.6 for 16:10, 1.78 for 16:9)
+    output: tablet      # tablet: drive the calibrated absolute device (no GNOME
+                        #   acceleration on top; uses --calibrate) | mouse: plain
+                        #   relative mouse events (GNOME acceleration applies)
+    mouse_px_per_screen: 1920  # output: mouse only - counts per screen width
+    filter:             # One Euro filter
+      min_cutoff: 1.0   # lower = steadier when still, but more lag
+      beta: 4.0         # higher = less lag on fast moves, but more jitter
+      d_cutoff: 1.0
+
+  # Absolute mode only:
   region:               # part of the camera view mapped to the whole screen
     x_min: 0.2
     x_max: 0.8
     y_min: 0.2
     y_max: 0.7
   filter:               # One Euro filter
-    min_cutoff: 1.0     # lower = steadier when still, but more lag
-    beta: 10.0          # higher = less lag on fast moves, but more jitter
+    min_cutoff: 1.0
+    beta: 10.0
     d_cutoff: 1.0
-  abs_scale: [1.0, 1.0] # set by --calibrate (saved in config/calibration.yaml, which wins)
+  abs_scale: [1.0, 1.0] # set by --calibrate (saved in config/calibration.yaml, which
+                        # wins). Also used by relative mode with output: tablet.
   deadzone: 0.0015      # ignore cursor changes smaller than this (fraction of screen)
-  relative_gain: 1800   # relative mode only: counts per crossing of the region
-  click_freeze_ms: 180  # hold the cursor still briefly when a click starts
 
 scroll:
   notches_per_height: 25  # wheel notches for moving your hand the full frame height

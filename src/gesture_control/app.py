@@ -6,7 +6,7 @@ import argparse
 import sys
 import time
 
-from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_config
+from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_config, pointer_device_mode
 from .pointer import VirtualPointer
 
 MODEL_URL = (
@@ -22,7 +22,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument("--config", help=f"YAML config (default: {DEFAULT_CONFIG_PATH})")
     p.add_argument("--camera", type=int, help="camera index, e.g. 0 for /dev/video0")
-    p.add_argument("--mode", choices=["absolute", "relative"], help="override cursor.mode")
+    p.add_argument("--mode", choices=["absolute", "relative"],
+                   help="override cursor.mode (relative: touchpad-like, absolute: hand = screen)")
     p.add_argument("--no-preview", action="store_true", help="run without the preview window")
     p.add_argument("--dry-run", action="store_true",
                    help="don't create a virtual mouse; print the actions instead")
@@ -67,8 +68,11 @@ def pointer_test(mode: str, dry_run: bool, abs_scale=(1.0, 1.0)) -> None:
                 for _ in range(20):
                     ptr.move_rel(dx, dy)
                     time.sleep(0.01)
-        print("Done. If the cursor did not move in absolute mode, set cursor.mode: relative "
-              "in config/gestures.yaml (or run with --mode relative).")
+        if mode == "absolute":
+            print("Done. If the cursor did not move, the tablet device isn't accepted: set "
+                  "cursor.mode: relative and cursor.relative.output: mouse in config/local.yaml.")
+        else:
+            print("Done.")
     finally:
         ptr.close()
 
@@ -94,7 +98,7 @@ def main(argv=None) -> None:
         run_calibration(args.dry_run, args.config)
         return
     if args.pointer_test:
-        pointer_test(cfg["cursor"]["mode"], args.dry_run, cfg["cursor"]["abs_scale"])
+        pointer_test(pointer_device_mode(cfg), args.dry_run, cfg["cursor"]["abs_scale"])
         return
 
     from pathlib import Path
@@ -109,10 +113,11 @@ def main(argv=None) -> None:
     # Heavy imports after argument handling so --help and --pointer-test stay fast.
     from .capture import Camera
     from .controller import GestureController
-    from .features import anchor_point, compute_features
+    from .features import anchor_point, compute_features, palm_length
     from .tracker import HandTracker, feature_points
 
-    pointer = _make_pointer(cfg["cursor"]["mode"], args.dry_run)
+    device = pointer_device_mode(cfg)
+    pointer = _make_pointer(device, args.dry_run)
     camera = Camera(cfg["camera"])
     tracker = None
     overlay = None
@@ -123,7 +128,7 @@ def main(argv=None) -> None:
               f"cursor: {cfg['cursor']['mode']} | {'DRY RUN' if args.dry_run else 'live'}")
         if cfg["_loaded"]:
             print("Also loaded: " + ", ".join(f"config/{n}" for n in cfg["_loaded"]))
-        if cfg["cursor"]["mode"] == "absolute" and "calibration.yaml" not in cfg["_loaded"]:
+        if device == "absolute" and "calibration.yaml" not in cfg["_loaded"]:
             print("Tip: if the cursor reaches the right/bottom screen edge too early, "
                   "run: uv run gesture-control --calibrate")
         tracker = HandTracker(cfg["tracker"])
@@ -161,13 +166,14 @@ def main(argv=None) -> None:
                 frame = frame[:, ::-1].copy()  # mirror before detection: handedness stays correct
 
             hand = tracker.process(frame, int(cap_ts * 1000))
-            feats = anchor = None
+            feats = anchor = palm = None
             if hand is not None:
                 fh, fw = frame.shape[:2]
                 feats = compute_features(feature_points(hand, fw, fh), ext, curl)
                 anchor = anchor_point(hand.image, anchor_name)
+                palm = palm_length(hand.image, fw, fh)
             now = time.monotonic()
-            status = controller.update(feats, anchor, now)
+            status = controller.update(feats, anchor, now, palm)
             latency_ms = (time.monotonic() - cap_ts) * 1000
 
             n_fps += 1

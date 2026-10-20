@@ -2,7 +2,8 @@
 
 Modes
   IDLE   - hand visible but not controlling anything (palm, unknown pose)
-  MOVE   - "point" pose: cursor follows the hand; pinches click/drag
+  MOVE   - "point" pose: cursor follows the hand (absolute) or its movement
+           (relative, touchpad-like); pinches click/drag
   SCROLL - "two" pose: vertical hand movement scrolls
 
 Rules that keep it from misfiring
@@ -43,7 +44,7 @@ class Status:
     pinch_middle: float | None = None
     facing: float | None = None
     pinch_blocked: bool = False  # hand turned too far for a reliable pinch
-    cursor: tuple[float, float] | None = None  # normalized screen position (absolute mode)
+    cursor: tuple[float, float] | None = None  # normalized screen position
     fist_progress: float = 0.0
     last_action: str = ""
     events: list[str] = field(default_factory=list)
@@ -133,7 +134,22 @@ class GestureController:
         self.abs_mode = cc["mode"] == "absolute"
         self.abs_scale = tuple(cc.get("abs_scale", (1.0, 1.0)))
         self.deadzone = float(cc["deadzone"])
-        self.rel_gain = float(cc["relative_gain"])
+        rc = cc["relative"]
+        self.rel_gain_slow, self.rel_gain_fast = float(rc["gain_slow"]), float(rc["gain_fast"])
+        self.rel_speed_slow, self.rel_speed_fast = float(rc["speed_slow"]), float(rc["speed_fast"])
+        self.rel_min_speed = float(rc["min_speed"])
+        self.rel_filter = OneEuroFilter(**rc["filter"])
+        self.rel_output = rc["output"]
+        self.screen_aspect = float(rc["screen_aspect"])
+        self.mouse_px = float(rc["mouse_px_per_screen"])
+        cam = cfg["camera"]
+        self.frame_aspect = float(cam["height"]) / max(float(cam["width"]), 1.0)  # h / w
+        self._prev_t = 0.0
+        self.last_gain = 0.0
+        # Relative mode keeps its own cursor (screen fractions, 0..1) and sends it to the
+        # absolute (tablet) device, so GNOME's mouse acceleration never stacks on ours.
+        self._cursor = [0.5, 0.5]
+        self._palm: float | None = None  # smoothed palm length, in camera-frame widths
         self.freeze_s = float(cc["click_freeze_ms"]) / 1000.0
 
         self.scroll_units = float(sc["notches_per_height"]) * HI_RES_PER_NOTCH
@@ -165,7 +181,10 @@ class GestureController:
         self._act("paused" if self.paused else "resumed")
 
     def update(self, feats: HandFeatures | None, anchor: tuple[float, float] | None,
-               t: float) -> Status:
+               t: float, palm: float | None = None) -> Status:
+        """palm: palm length (wrist to middle knuckle) in camera-frame widths. Relative
+        mode measures hand movement in palm lengths, so it feels the same at any
+        distance from the camera."""
         st = Status(paused=self.paused)
         self._events = []
 
@@ -247,7 +266,7 @@ class GestureController:
             # While the pose is changing away from "point" (e.g. opening the palm to
             # stop), hold the cursor so the hand's own movement doesn't drag it off target.
             hold = feats.pose not in (POINT, NONE) and not self.pointer.is_down("left")
-            self._move_cursor(anchor, t, st, hold=hold)
+            self._move_cursor(anchor, t, st, hold=hold, palm=palm)
         elif self.mode == Mode.SCROLL:
             # Same for scroll: only scroll on frames that really show the scroll pose.
             settling = t - self._mode_since < self.scroll_settle_s or feats.pose != TWO
@@ -261,6 +280,7 @@ class GestureController:
             self.pointer.release_all()
         self.mode = mode
         self.cursor_filter.reset()
+        self.rel_filter.reset()
         self.scroll_filter.reset()
         self._prev_mapped = None
         self._last_sent = None
@@ -276,41 +296,73 @@ class GestureController:
         return min(max(nx, 0.0), 1.0), min(max(ny, 0.0), 1.0)
 
     def _move_cursor(self, anchor: tuple[float, float], t: float, st: Status,
-                     hold: bool = False) -> None:
+                     hold: bool = False, palm: float | None = None) -> None:
         if self.abs_mode:
-            raw = self._map(anchor)
+            self._move_absolute(anchor, t, st, hold)
         else:
-            # Relative mode: crossing the region once moves `relative_gain` counts.
-            x0, x1, y0, y1 = self.region
-            raw = (anchor[0] / max(x1 - x0, 1e-6), anchor[1] / max(y1 - y0, 1e-6))
-        fx, fy = self.cursor_filter(raw, t)
-        if hold:
-            self._prev_mapped = (fx, fy)
+            self._move_relative(anchor, t, st, hold, palm)
+
+    def _move_absolute(self, anchor, t, st: Status, hold: bool) -> None:
+        fx, fy = self.cursor_filter(self._map(anchor), t)
+        if hold or t < self._freeze_until:
             return
-        if t < self._freeze_until:
-            # Keep the filter updated but hold the cursor still for a clean click.
-            self._prev_mapped = (fx, fy)
+        st.cursor = (float(fx), float(fy))
+        if self._last_sent is not None:
+            if max(abs(fx - self._last_sent[0]), abs(fy - self._last_sent[1])) < self.deadzone:
+                return
+        # abs_scale (from --calibrate) shrinks the output range so the region's
+        # far edges land exactly on the screen's right/bottom edges.
+        self.pointer.move_abs(fx * self.abs_scale[0], fy * self.abs_scale[1])
+        self._last_sent = (float(fx), float(fy))
+
+    def _rel_gain(self, speed: float) -> float:
+        """Screen widths of cursor travel per palm length of hand travel, rising
+        smoothly with hand speed (palm lengths per second): slow = precise,
+        fast = cross the screen with little arm movement."""
+        lo, hi = self.rel_speed_slow, self.rel_speed_fast
+        u = min(max((speed - lo) / max(hi - lo, 1e-6), 0.0), 1.0)
+        u = u * u * (3.0 - 2.0 * u)  # smoothstep
+        return self.rel_gain_slow + (self.rel_gain_fast - self.rel_gain_slow) * u
+
+    def _move_relative(self, anchor, t, st: Status, hold: bool, palm: float | None) -> None:
+        if palm is not None and palm > 1e-4:
+            self._palm = palm if self._palm is None else 0.85 * self._palm + 0.15 * palm
+        palm_len = self._palm or 0.16  # typical value if no palm size was given
+
+        # Isotropic units: both axes in camera-frame widths.
+        pos = (anchor[0], anchor[1] * self.frame_aspect)
+        fx, fy = self.rel_filter(pos, t)
+        prev, prev_t = self._prev_mapped, self._prev_t
+        self._prev_mapped, self._prev_t = (fx, fy), t
+        st.cursor = (self._cursor[0], self._cursor[1])
+        if prev is None or hold or t < self._freeze_until or t <= prev_t:
+            return
+        dxp = (fx - prev[0]) / palm_len  # hand movement in palm lengths
+        dyp = (fy - prev[1]) / palm_len
+        speed = (dxp * dxp + dyp * dyp) ** 0.5 / (t - prev_t)
+        if speed < self.rel_min_speed:
+            # Tracking jitter while the hand is still: don't let it creep the cursor.
+            self._rel_rem = [0.0, 0.0]
+            return
+        gain = self._rel_gain(speed)
+        self.last_gain = gain
+        dx = dxp * gain                       # screen widths
+        dy = dyp * gain * self.screen_aspect  # screen heights (same distance in pixels)
+
+        if self.rel_output == "mouse":
+            # Plain relative mouse events (GNOME's acceleration applies on top).
+            px = dx * self.mouse_px + self._rel_rem[0]
+            py = dy * self.mouse_px + self._rel_rem[1]
+            ix, iy = int(px), int(py)
+            self._rel_rem = [px - ix, py - iy]
+            self.pointer.move_rel(ix, iy)
             return
 
-        if self.abs_mode:
-            st.cursor = (float(fx), float(fy))
-            if self._last_sent is not None:
-                if max(abs(fx - self._last_sent[0]), abs(fy - self._last_sent[1])) < self.deadzone:
-                    return
-            # abs_scale (from --calibrate) shrinks the output range so the region's
-            # far edges land exactly on the screen's right/bottom edges.
-            self.pointer.move_abs(fx * self.abs_scale[0], fy * self.abs_scale[1])
-            self._last_sent = (float(fx), float(fy))
-        else:
-            if self._prev_mapped is None:
-                self._prev_mapped = (fx, fy)
-                return
-            dx = (fx - self._prev_mapped[0]) * self.rel_gain + self._rel_rem[0]
-            dy = (fy - self._prev_mapped[1]) * self.rel_gain + self._rel_rem[1]
-            self._prev_mapped = (fx, fy)
-            ix, iy = int(dx), int(dy)
-            self._rel_rem = [dx - ix, dy - iy]
-            self.pointer.move_rel(ix, iy)
+        cx = min(max(self._cursor[0] + dx, 0.0), 1.0)
+        cy = min(max(self._cursor[1] + dy, 0.0), 1.0)
+        self._cursor = [cx, cy]
+        st.cursor = (cx, cy)
+        self.pointer.move_abs(cx * self.abs_scale[0], cy * self.abs_scale[1])
 
     def _scroll(self, anchor: tuple[float, float], t: float, settling: bool = False) -> None:
         y = float(self.scroll_filter([anchor[1]], t)[0])

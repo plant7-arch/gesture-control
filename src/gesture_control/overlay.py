@@ -52,6 +52,8 @@ class Overlay:
         self.show_landmarks = bool(cfg["preview"]["show_landmarks"])
         r = cfg["cursor"]["region"]
         self.region = (r["x_min"], r["x_max"], r["y_min"], r["y_max"])
+        # The box only means something in absolute mode (it is mapped to the screen).
+        self.show_region = cfg["cursor"]["mode"] == "absolute"
         self.pinch_start = float(cfg["pinch"]["start"])
         self.pinch_release = float(cfg["pinch"]["release"])
         fix_qt_fonts()
@@ -64,8 +66,9 @@ class Overlay:
         colour = RED if st.paused else MODE_COLOUR[st.mode]
 
         # Active region (the part of the camera view that maps to the screen).
-        x0, x1, y0, y1 = self.region
-        cv2.rectangle(frame, (int(x0 * w), int(y0 * h)), (int(x1 * w), int(y1 * h)), colour, 1)
+        if self.show_region:
+            x0, x1, y0, y1 = self.region
+            cv2.rectangle(frame, (int(x0 * w), int(y0 * h)), (int(x1 * w), int(y1 * h)), colour, 1)
 
         if hand is not None and self.show_landmarks:
             pts = [(int(p[0] * w), int(p[1] * h)) for p in hand.image]

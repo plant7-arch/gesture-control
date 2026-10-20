@@ -11,7 +11,7 @@ WRIST = 0
 THUMB_TIP = 4
 INDEX_MCP, INDEX_PIP, INDEX_TIP = 5, 6, 8
 MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP = 9, 10, 12
-RING_PIP, RING_TIP = 14, 16
+RING_MCP, RING_PIP, RING_TIP = 13, 14, 16
 PINKY_MCP, PINKY_PIP, PINKY_TIP = 17, 18, 20
 
 FINGERS: dict[str, tuple[int, int]] = {
@@ -106,12 +106,24 @@ def compute_features(pts: np.ndarray, extend_ratio: float, curl_ratio: float) ->
 def anchor_point(image_pts: np.ndarray, anchor: str) -> tuple[float, float]:
     """Point (normalized image coords) that drives the cursor.
 
-    index_mcp (default) barely moves when you pinch, so clicks don't drag the cursor.
+    knuckles (default) and index_mcp barely move when you pinch, so clicks don't
+    drag the cursor.
     """
-    if anchor == "index_tip":
+    if anchor == "knuckles":
+        # Average of four landmarks: about half the tracking jitter of one point,
+        # and knuckles stay put when you pinch.
+        p = image_pts[[INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP]].mean(axis=0)
+    elif anchor == "index_tip":
         p = image_pts[INDEX_TIP]
     elif anchor == "palm_center":
         p = image_pts[[WRIST, INDEX_MCP, MIDDLE_MCP, PINKY_MCP]].mean(axis=0)
     else:
         p = image_pts[INDEX_MCP]
     return float(p[0]), float(p[1])
+
+
+def palm_length(image_pts: np.ndarray, frame_w: int, frame_h: int) -> float:
+    """Wrist to middle knuckle, in camera-frame widths."""
+    dx = image_pts[MIDDLE_MCP][0] - image_pts[WRIST][0]
+    dy = (image_pts[MIDDLE_MCP][1] - image_pts[WRIST][1]) * frame_h / max(frame_w, 1)
+    return float((dx * dx + dy * dy) ** 0.5)
