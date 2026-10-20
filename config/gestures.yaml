@@ -33,10 +33,15 @@ pose:
 
 pinch:
   # Thumb-to-fingertip distance, relative to palm size (the L / R bars in the preview).
+  # A pinch is armed (label lit in the preview) once the fingers are seen apart past
+  # the release tick; only an armed pinch can click. So a resting thumb never clicks.
   start: 0.28           # pinch begins below this...
   release: 0.42         # ...and ends above this (the gap prevents flicker)
   confirm_frames: 3       # frames below start before it counts (~100 ms)
-  min_finger_reach: 1.05  # ignore pinches while the finger is curled into a fist
+  min_finger_reach: 1.05  # left pinch: ignore it while the index finger is curled
+                          #   into a fist
+  right_min_reach: 0.0    # right pinch: same check for the middle finger; 0 = off,
+                          #   since the thumb often taps a bent middle finger
   min_facing: 0.6         # only start pinches when the hand faces the camera
                           # (1 = square on, 0 = edge-on). Turned hands make fingertips
                           # line up and look touching. Shown as the facing value.

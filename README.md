@@ -77,7 +77,9 @@ All settings are in `config/gestures.yaml`, with comments. The preview shows the
   because a turned hand makes fingertips line up and look touching when they aren't.
   If real pinches get blocked, lower it a little; if false clicks still happen, raise it.
 - **Pinch arming**: a pinch only counts after the bar has been seen open (past the
-  right tick) while your hand faces the camera, then closes. Start from an open hand.
+  right tick) while your hand faces the camera, then closes. The L / R label turns green
+  when armed. If a bar goes red but nothing clicks, check that its label was green first:
+  open the fingers a little wider before tapping.
 - **Double click** (`double_click`): the second pinch must start within `window_ms`
   (700) of letting go of the first, with the cursor within `max_move` of the first click.
   It then snaps back to the first click's spot, so a little drift doesn't matter.

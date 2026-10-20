@@ -94,8 +94,8 @@ class Overlay:
         _text(frame, hand_txt if st.hand else "no hand", (10, 74), WHITE if st.hand else GREY)
         if handedness and st.hand:
             _text(frame, handedness, (190, 74), GREY)
-        self._meter(frame, "L", st.pinch_index, 96, st.pinch_blocked)
-        self._meter(frame, "R", st.pinch_middle, 116, st.pinch_blocked)
+        self._meter(frame, "L", st.pinch_index, 96, st.pinch_blocked, st.left_armed or st.left_down)
+        self._meter(frame, "R", st.pinch_middle, 116, st.pinch_blocked, st.right_armed)
         if st.facing is not None:
             if st.pinch_blocked:
                 _text(frame, f"facing {st.facing:.2f}  turn palm to camera", (10, 144), ORANGE, 0.45)
@@ -118,11 +118,12 @@ class Overlay:
         return frame
 
     def _meter(self, frame, label: str, value: float | None, y: int,
-               blocked: bool = False) -> None:
+               blocked: bool = False, armed: bool = False) -> None:
         """Pinch distance bar: fills as fingers close; ticks mark start/release.
-        Grey while pinches are blocked because the hand is turned away."""
+        Grey while pinches are blocked because the hand is turned away. The label
+        lights up green when the pinch is armed (the next close will click)."""
         x, width = 30, 150
-        _text(frame, label, (10, y + 9), GREY, 0.45)
+        _text(frame, label, (10, y + 9), GREEN if armed else GREY, 0.5, 2 if armed else 1)
         cv2.rectangle(frame, (x, y), (x + width, y + 10), GREY, 1)
         top = 1.0
         if value is not None:

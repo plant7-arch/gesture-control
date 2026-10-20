@@ -44,6 +44,8 @@ class Status:
     pinch_middle: float | None = None
     facing: float | None = None
     pinch_blocked: bool = False  # hand turned too far for a reliable pinch
+    left_armed: bool = False     # fingers seen apart: the next close will click
+    right_armed: bool = False
     cursor: tuple[float, float] | None = None  # normalized screen position
     fist_progress: float = 0.0
     last_action: str = ""
@@ -90,14 +92,17 @@ class PinchDetector:
         self.armed = False
         self._count = 0
 
-    def update(self, ratio: float, ok: bool) -> tuple[bool, bool, bool]:
+    def update(self, ratio: float, ok: bool, can_start: bool = True) -> tuple[bool, bool, bool]:
+        """ok: conditions for arming and starting (e.g. hand faces the camera).
+        can_start: extra condition only for the moment the pinch starts; failing it
+        does not disarm."""
         if not self.active:
             if not ok:
                 self.armed, self._count = False, 0
                 return False, False, False
             if ratio > self.release_t:
                 self.armed = True
-            if self.armed and ratio < self.start:
+            if self.armed and ratio < self.start and can_start:
                 self._count += 1
                 if self._count >= self.confirm:
                     self.active, self.armed, self._count = True, False, 0
@@ -125,6 +130,7 @@ class GestureController:
         self.left = PinchDetector(pc["start"], pc["release"], pc["confirm_frames"])
         self.right = PinchDetector(pc["start"], pc["release"], pc["confirm_frames"])
         self.min_reach = float(pc["min_finger_reach"])
+        self.right_min_reach = float(pc["right_min_reach"])
         self.min_facing = float(pc["min_facing"])
 
         self.cursor_filter = OneEuroFilter(**cc["filter"])
@@ -237,12 +243,16 @@ class GestureController:
         # (e.g. a drag) is not cut off when the hand turns.
         facing_ok = feats.facing >= self.min_facing
         st.facing, st.pinch_blocked = feats.facing, not facing_ok
+        # Left: the index finger must reach forward (not curled into a fist) when the
+        # pinch starts. Right: no reach check, because tapping the thumb onto a bent
+        # middle finger is a natural right-click; arming already stops a thumb that
+        # merely rests on the finger from firing.
         _, l_start, l_end = self.left.update(
-            feats.pinch_index, facing_ok and feats.reach_index >= self.min_reach)
+            feats.pinch_index, facing_ok, feats.reach_index >= self.min_reach)
         _, r_start, _ = self.right.update(
-            feats.pinch_middle,
-            facing_ok and feats.reach_middle >= self.min_reach and not self.left.active,
-        )
+            feats.pinch_middle, facing_ok and not self.left.active,
+            feats.reach_middle >= self.right_min_reach)
+        st.left_armed, st.right_armed = self.left.armed, self.right.armed
 
         # Mode selection.
         # A pinch confirmed this frame counts as a drag, so it can't lose a race with a

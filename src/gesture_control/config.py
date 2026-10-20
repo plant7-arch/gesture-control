@@ -43,6 +43,7 @@ DEFAULTS: dict[str, Any] = {
         "release": 0.42,
         "confirm_frames": 3,
         "min_finger_reach": 1.05,
+        "right_min_reach": 0.0,
         "min_facing": 0.6,
     },
     "cursor": {
