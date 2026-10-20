@@ -47,6 +47,7 @@ In the preview window: `q` / `Esc` quits, `p` toggles pause.
 |---|---|
 | Index finger up, other fingers down | Move the cursor |
 | ...then pinch thumb + index | Left click; keep pinching and move to drag |
+| ...pinch thumb + index twice quickly | Double click |
 | ...then pinch thumb + middle (index stays up) | Right click |
 | Index + middle up (peace sign), move hand up/down | Scroll |
 | Open palm | Neutral: nothing happens |
@@ -77,6 +78,10 @@ All settings are in `config/gestures.yaml`, with comments. The preview shows the
   If real pinches get blocked, lower it a little; if false clicks still happen, raise it.
 - **Pinch arming**: a pinch only counts after the bar has been seen open (past the
   right tick) while your hand faces the camera, then closes. Start from an open hand.
+- **Double click** (`double_click`): the second pinch must start within `window_ms`
+  (700) of letting go of the first, with the cursor within `max_move` of the first click.
+  It then snaps back to the first click's spot, so a little drift doesn't matter.
+  If double clicks come out as two single clicks, raise `window_ms`.
 - **pose (raw)**: the debounced pose, with the raw per-frame pose in brackets when they differ.
 - **fps / ms**: processing rate and camera-to-action latency.
 - Relative mode feel (`cursor.relative`): too twitchy for precise aiming, lower

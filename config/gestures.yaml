@@ -96,6 +96,17 @@ scroll:
     beta: 5.0
     d_cutoff: 1.0
 
+double_click:
+  # Pinch twice quickly (thumb + index) for a double click. A second pinch within
+  # window_ms of letting go of the first, with the cursor still near the first click,
+  # snaps back to that spot and is sent as a guaranteed double click.
+  enabled: true
+  window_ms: 700        # longer = more relaxed timing, but two separate clicks on the
+                        #   same spot may merge into a double click
+  max_move: 0.02        # how far the cursor may drift between the pinches (fraction
+                        #   of screen width, 0.02 = about 38 px on 1920)
+  os_time_ms: auto      # auto = read GNOME's double-click time (default 400)
+
 pause:
   fist_hold_s: 1.0      # hold a fist this long to pause / resume
   start_paused: false

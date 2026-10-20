@@ -72,6 +72,12 @@ DEFAULTS: dict[str, Any] = {
         "settle_ms": 200,
         "filter": {"min_cutoff": 1.0, "beta": 5.0, "d_cutoff": 1.0},
     },
+    "double_click": {
+        "enabled": True,
+        "window_ms": 700,
+        "max_move": 0.02,
+        "os_time_ms": "auto",
+    },
     "pause": {
         "fist_hold_s": 1.0,
         "start_paused": False,
@@ -138,7 +144,26 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
             or not all(isinstance(v, (int, float)) and 0.1 <= v <= 1.0 for v in scale)):
         raise ValueError("cursor.abs_scale must be two numbers between 0.1 and 1.0")
     cfg["cursor"]["abs_scale"] = [float(scale[0]), float(scale[1])]
+    if cfg["double_click"]["os_time_ms"] == "auto":
+        cfg["double_click"]["os_time_ms"] = gnome_double_click_ms()
     return cfg
+
+
+def gnome_double_click_ms(default: int = 400) -> int:
+    """GNOME's double-click time setting (Settings > Mouse & Touchpad), in ms."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("gsettings"):
+        return default
+    try:
+        out = subprocess.run(
+            ["gsettings", "get", "org.gnome.desktop.peripherals.mouse", "double-click"],
+            capture_output=True, text=True, timeout=2, check=False,
+        ).stdout.strip().split()[-1]
+        return int(out)
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return default
 
 
 def pointer_device_mode(cfg: dict[str, Any]) -> str:

@@ -152,6 +152,17 @@ class GestureController:
         self._palm: float | None = None  # smoothed palm length, in camera-frame widths
         self.freeze_s = float(cc["click_freeze_ms"]) / 1000.0
 
+        dc = cfg["double_click"]
+        self.dc_enabled = bool(dc["enabled"])
+        self.dc_window = float(dc["window_ms"]) / 1000.0
+        self.dc_max_move = float(dc["max_move"])
+        os_ms = dc["os_time_ms"]
+        self.dc_os_time = (float(os_ms) if isinstance(os_ms, (int, float)) else 400.0) / 1000.0
+        self._click_press_t: float | None = None    # last left press
+        self._click_release_t: float | None = None  # last left release
+        self._click_pos: tuple[float, float] | None = None  # cursor at last press
+        self._last_was_double = False
+
         self.scroll_units = float(sc["notches_per_height"]) * HI_RES_PER_NOTCH
         self.scroll_sign = -1.0 if sc["invert"] else 1.0
         self.scroll_deadzone = float(sc["deadzone"])
@@ -253,11 +264,11 @@ class GestureController:
 
         if self.mode == Mode.MOVE:
             if l_start:
-                self.pointer.press("left")
-                self._freeze_until = t + self.freeze_s
-                self._act("left down")
+                self._left_press(t)
             if l_end and self.pointer.is_down("left"):
                 self.pointer.release("left")
+                # After a double click, the next pinch starts a fresh sequence.
+                self._click_release_t = None if self._last_was_double else t
                 self._act("left up")
             if r_start and not self.pointer.is_down("left"):
                 self.pointer.click("right")
@@ -288,6 +299,54 @@ class GestureController:
         self._scroll_prev = None
         self.left.reset()
         self.right.reset()
+
+    def _cursor_pos(self) -> tuple[float, float] | None:
+        """Current cursor position as a screen fraction, if this mode knows it."""
+        if self.abs_mode:
+            return self._last_sent
+        if self.rel_output == "tablet":
+            return (self._cursor[0], self._cursor[1])
+        return None  # plain relative mouse events: position unknown
+
+    def _place(self, pos: tuple[float, float]) -> None:
+        """Put the cursor at a screen fraction (tablet/absolute output only)."""
+        self.pointer.move_abs(pos[0] * self.abs_scale[0], pos[1] * self.abs_scale[1])
+        if self.abs_mode:
+            self._last_sent = pos
+        else:
+            self._cursor = [pos[0], pos[1]]
+
+    def _left_press(self, t: float) -> None:
+        """Start a left press. A second pinch soon after the previous click, near the
+        same spot, becomes a guaranteed double click:
+          * the cursor snaps back to where the first click happened, and
+          * if the OS double-click time has already run out since the first press,
+            an extra quick click is sent first, so the OS sees two presses in time.
+        """
+        pos = self._cursor_pos()
+        double = (
+            self.dc_enabled
+            and self._click_release_t is not None
+            and t - self._click_release_t <= self.dc_window
+        )
+        if double and pos is not None and self._click_pos is not None:
+            moved = max(abs(pos[0] - self._click_pos[0]), abs(pos[1] - self._click_pos[1]))
+            double = moved <= self.dc_max_move
+        if double:
+            if self._click_pos is not None and pos is not None:
+                self._place(self._click_pos)
+            if self._click_press_t is None or t - self._click_press_t > self.dc_os_time:
+                self.pointer.click("left")
+            self.pointer.press("left")
+            self._act("double click")
+            self._last_was_double = True
+        else:
+            self.pointer.press("left")
+            self._click_pos = pos
+            self._last_was_double = False
+            self._act("left down")
+        self._click_press_t = t
+        self._freeze_until = t + self.freeze_s
 
     def _map(self, anchor: tuple[float, float]) -> tuple[float, float]:
         x0, x1, y0, y1 = self.region
