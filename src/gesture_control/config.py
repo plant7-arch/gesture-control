@@ -105,11 +105,30 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
-    with path.open() as fh:
-        data = yaml.safe_load(fh) or {}
+    try:
+        with path.open() as fh:
+            data = yaml.safe_load(fh) or {}
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        where = f" (line {mark.line + 1}, column {mark.column + 1})" if mark else ""
+        problem = getattr(exc, "problem", None) or "invalid YAML"
+        raise ValueError(f"{path.name}{where}: {problem}. Check the indentation "
+                         "(2 spaces per level, no tabs) and the colons.") from None
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a YAML mapping")
     return data
+
+
+def _unknown_keys(data: dict[str, Any], ref: dict[str, Any], prefix: str = "") -> list[str]:
+    """Setting names in data that don't exist in ref (usually typos)."""
+    out = []
+    for key, value in data.items():
+        name = f"{prefix}{key}"
+        if key not in ref:
+            out.append(name)
+        elif isinstance(value, dict) and isinstance(ref[key], dict):
+            out += _unknown_keys(value, ref[key], name + ".")
+    return out
 
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
@@ -117,17 +136,25 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     from the same folder (if present). Missing keys fall back to defaults."""
     cfg_path = Path(path) if path else DEFAULT_CONFIG_PATH
     cfg = copy.deepcopy(DEFAULTS)
+    warnings: list[str] = []
+    files = []
     if cfg_path.exists():
-        cfg = _deep_merge(cfg, _read_yaml(cfg_path))
+        files.append(cfg_path)
     elif path:
         raise FileNotFoundError(f"Config file not found: {cfg_path}")
     loaded = []
     for name in (CALIBRATION_FILE, LOCAL_FILE):
         extra = cfg_path.parent / name
         if extra.exists():
-            cfg = _deep_merge(cfg, _read_yaml(extra))
+            files.append(extra)
             loaded.append(name)
+    for f in files:
+        data = _read_yaml(f)
+        for key in _unknown_keys(data, DEFAULTS):
+            warnings.append(f"{f.name}: unknown setting '{key}' (typo?) - ignored")
+        cfg = _deep_merge(cfg, data)
     cfg["_loaded"] = loaded
+    cfg["_warnings"] = warnings
 
     model = Path(cfg["tracker"]["model"]).expanduser()
     if not model.is_absolute():

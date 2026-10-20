@@ -83,6 +83,8 @@ def main(argv=None) -> None:
         cfg = load_config(args.config)
     except (OSError, ValueError) as exc:
         sys.exit(f"Config error: {exc}")
+    for warning in cfg["_warnings"]:
+        print(f"Config warning: {warning}")
     if args.camera is not None:
         cfg["camera"]["index"] = args.camera
     if args.mode:
