@@ -1,0 +1,28 @@
+[project]
+name = "gesture-control"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "plant7-arch", email = "230461642+plant7-arch@users.noreply.github.com" }
+]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "evdev>=2.0.0",
+    "mediapipe>=1.1.1",
+    "numpy>=2.5.4",
+    "opencv-python>=5.0.0.93",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+gesture-control = "gesture_control:main"
+
+[build-system]
+requires = ["uv_build>=0.12.22,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "scikit-learn>=1.9.1",
+]
