@@ -279,6 +279,7 @@ class GestureController:
         self._prev_mapped = None
         self._rel_rem = [0.0, 0.0]
         self._scroll_prev: float | None = None
+        self._scroll_rem = 0.0       # fraction of a hi-res unit not sent yet
         self._last_action = ""
         self._events: list[str] = []
         self._actions: list[str] = []
@@ -696,12 +697,17 @@ class GestureController:
             # Just switched pose: the hand is still moving into position, so only
             # track the baseline for a moment instead of scrolling.
             self._scroll_prev = y
+            self._scroll_rem = 0.0
             return
         dy = self._scroll_prev - y  # hand moving up -> positive
         if abs(dy) < self.scroll_deadzone:
             return
         self._scroll_prev = y
-        units = int(round(dy * self.scroll_units * self.scroll_sign))
+        # Carry the fraction of a unit to the next step instead of rounding it away,
+        # so the page moves exactly as far as the hand did, however slowly.
+        amount = dy * self.scroll_units * self.scroll_sign + self._scroll_rem
+        units = int(amount)
+        self._scroll_rem = amount - units
         if units:
             self.pointer.scroll(units)
             self._act("scroll up" if units > 0 else "scroll down", quiet=True)

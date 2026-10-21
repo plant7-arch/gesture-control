@@ -165,7 +165,30 @@ class Overlay:
             cv2.line(frame, (tx, y - 2), (tx, y + 12), WHITE, 1)
 
     def show(self, frame: np.ndarray) -> int:
+        self._last = frame  # for show_stalled(); each frame is a new array, no copy needed
         cv2.imshow(self.name, frame)
+        return cv2.waitKey(1) & 0xFF
+
+    def stalled_image(self, seconds: float) -> np.ndarray:
+        """The last frame, dimmed, with a band saying the camera has stopped sending.
+        Without it the window just freezes and looks like the app hung."""
+        last = getattr(self, "_last", None)
+        if last is not None:
+            img = (last * 0.35).astype(np.uint8)
+        else:
+            w, h = int(self.cfg["camera"]["width"]), int(self.cfg["camera"]["height"])
+            img = np.full((h, w, 3), 32, np.uint8)
+        h, w = img.shape[:2]
+        _shade(img, 0, h // 2 - 40, w, h // 2 + 44, 0.3)
+        _text(img, f"No camera frames for {seconds:.0f} s", (20, h // 2 - 10), ORANGE, 0.7, 2)
+        _text(img, "Is another app using the camera? Buttons and keys are released.",
+              (20, h // 2 + 18), WHITE, 0.45)
+        _text(img, "q / Esc to quit", (20, h // 2 + 38), GREY, 0.45)
+        return img
+
+    def show_stalled(self, seconds: float) -> int:
+        """Show stalled_image() and handle keys; the frame shown before stays _last."""
+        cv2.imshow(self.name, self.stalled_image(seconds))
         return cv2.waitKey(1) & 0xFF
 
     def poll(self, wait_ms: int = 1) -> int:

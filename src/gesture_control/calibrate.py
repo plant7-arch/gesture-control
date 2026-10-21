@@ -16,7 +16,7 @@ import select
 import sys
 import time
 
-from .config import save_calibration
+from .config import command, save_calibration
 from .pointer import VirtualPointer
 
 COARSE = (0.004, 0.03)   # (step, seconds per step)  -> about 0.13 of the range per second
@@ -90,5 +90,5 @@ def run_calibration(dry_run: bool, config_path: str | None) -> None:
         return
     out = save_calibration((sx, sy), config_path)
     print(f"\nSaved abs_scale [{sx:.3f}, {sy:.3f}] to {out}")
-    print("Check it with: uv run gesture-control --pointer-test "
+    print(f"Check it with: {command()} --pointer-test "
           "(the cursor should land exactly in all four corners).")

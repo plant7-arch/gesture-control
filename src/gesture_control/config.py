@@ -1,4 +1,14 @@
-"""Configuration: built-in defaults merged with config/gestures.yaml."""
+"""Configuration: built-in defaults merged with config/gestures.yaml.
+
+Where the files live depends on how the app is run:
+  * from the project folder (`uv run gesture-control`): config/ and models/ in that
+    folder, as always;
+  * installed as a command (`uv tool install .`, then `gesture-control` anywhere):
+    there is no project folder, so your settings go in ~/.config/gesture-control/
+    (local.yaml, calibration.yaml) and the downloaded model in
+    ~/.cache/gesture-control/models/. The defaults are built in, so no gestures.yaml
+    is needed there.
+"""
 
 from __future__ import annotations
 
@@ -10,9 +20,55 @@ from typing import Any
 
 import yaml
 
+APP = "gesture-control"
 # src/gesture_control/config.py -> project root is two levels above the package.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "gestures.yaml"
+
+
+def is_checkout(root: Path) -> bool:
+    """Is root this project's source folder (not, say, an installed package's
+    site-packages, whose grandparent is lib/pythonX.Y)?"""
+    return (root / "pyproject.toml").is_file() and (root / "config" / "gestures.yaml").is_file()
+
+
+def _xdg(var: str, fallback: str, env: dict[str, str], home: Path) -> Path:
+    value = env.get(var, "")
+    return Path(value) if value and Path(value).is_absolute() else home / fallback
+
+
+def locate(root: Path = PROJECT_ROOT, env: dict[str, str] | None = None,
+           home: Path | None = None) -> tuple[bool, Path, Path]:
+    """(running from the project folder?, config folder, folder that models/ is in)."""
+    if is_checkout(root):
+        return True, root / "config", root
+    env = dict(os.environ) if env is None else env
+    home = Path.home() if home is None else home
+    return (False, _xdg("XDG_CONFIG_HOME", ".config", env, home) / APP,
+            _xdg("XDG_CACHE_HOME", ".cache", env, home) / APP)
+
+
+FROM_CHECKOUT, CONFIG_DIR, DATA_ROOT = locate()
+DEFAULT_CONFIG_PATH = CONFIG_DIR / "gestures.yaml"
+
+
+def command() -> str:
+    """How to start the app, for messages: `uv run gesture-control` in the project
+    folder, plain `gesture-control` when installed as a command."""
+    return f"uv run {APP}" if FROM_CHECKOUT else APP
+
+
+def shown(name: str, folder: Path | None = None) -> str:
+    """How to name a config file in messages: config/local.yaml in the project
+    folder, ~/.config/gesture-control/local.yaml when installed."""
+    folder = CONFIG_DIR if folder is None else folder
+    if FROM_CHECKOUT and folder == CONFIG_DIR:
+        return f"config/{name}"
+    path = folder / name
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
 # Optional files next to gestures.yaml, merged on top of it in this order.
 # Build zips never contain them, so `unzip -o` can't overwrite them.
 CALIBRATION_FILE = "calibration.yaml"   # written by --calibrate
@@ -257,12 +313,13 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
             warnings.append(f"{f.name}: unknown setting '{key}' (typo?) - ignored")
         cfg = _deep_merge(cfg, data)
     cfg["_loaded"] = loaded
+    cfg["_config_dir"] = str(cfg_path.parent)
     cfg["_warnings"] = warnings
 
     _check_types(cfg)
     model = Path(cfg["tracker"]["model"]).expanduser()
     if not model.is_absolute():
-        model = PROJECT_ROOT / model
+        model = DATA_ROOT / model  # the project folder, or ~/.cache/gesture-control
     cfg["tracker"]["model"] = str(model)
 
     if cfg["cursor"]["mode"] not in ("absolute", "relative"):

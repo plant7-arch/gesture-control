@@ -14,9 +14,10 @@ import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
-from .config import PROJECT_ROOT
+from .config import DATA_ROOT
 
-DEFAULT_MODEL = PROJECT_ROOT / "models" / "hand_landmarker.task"
+# models/ in the project folder, or ~/.cache/gesture-control/models when installed.
+DEFAULT_MODEL = DATA_ROOT / "models" / "hand_landmarker.task"
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/1/hand_landmarker.task"

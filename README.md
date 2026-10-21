@@ -83,6 +83,39 @@ uv run gesture-control --calibrate      # 2. map the screen edges (once per disp
 uv run gesture-control                  # 3. full app with preview window
 ```
 
+### Install as a command (optional)
+
+To start the app from any folder as just `gesture-control`, install it as a uv tool
+from the project folder:
+
+```bash
+cd ~/Python/ML/gesture-control
+uv tool install .
+uv tool update-shell        # once: puts ~/.local/bin on your PATH (open a new terminal)
+gesture-control --version
+```
+
+The installed command keeps its files in your home folder instead of the project:
+
+| What | Project folder (`uv run gesture-control`) | Installed (`gesture-control`) |
+|---|---|---|
+| Your overrides | `config/local.yaml` | `~/.config/gesture-control/local.yaml` |
+| Calibration | `config/calibration.yaml` | `~/.config/gesture-control/calibration.yaml` |
+| Hand model | `models/hand_landmarker.task` | `~/.cache/gesture-control/models/hand_landmarker.task` |
+| Defaults | `config/gestures.yaml` | built in (same values) |
+
+To use your current settings with the installed command, copy them over once:
+
+```bash
+mkdir -p ~/.config/gesture-control
+cp config/local.yaml config/calibration.yaml ~/.config/gesture-control/ 2>/dev/null
+```
+
+The installed command is a snapshot: after unzipping a new build, run
+`uv tool install --reinstall .` in the project folder to update it. To remove it:
+`uv tool uninstall gesture-control`. The udev rule, `/dev/uinput` access and GNOME
+settings from Setup apply to both ways of running it.
+
 ### Calibration (absolute mode)
 
 GNOME can spread the virtual mouse's range over an area larger than the visible screen
@@ -159,7 +192,15 @@ second, the window opens early with a "Starting camera and hand tracker..." mess
 
 In the preview window: `q` / `Esc` quits, `p` toggles pause. The app also shuts down
 cleanly (buttons and virtual fingers released, camera settings put back) when it's
-stopped with Ctrl+C, `kill`, or by closing its terminal.
+stopped with Ctrl+C, `kill`, or by closing its terminal, including during the first
+start's model download (the partial download is removed). While it's shutting down, a
+second Ctrl+C doesn't interrupt that cleanup: it says the app is still stopping, and a
+third Ctrl+C quits at once.
+
+If the camera stops sending frames (another app took it, or it was unplugged), the
+app releases any held button, key or touchpad fingers after a second, and the preview
+dims the last image and shows how long the camera has been silent. Tracking picks up
+again as soon as frames come back.
 
 The app adjusts one camera setting while it runs (it stops auto-exposure from lowering
 the frame rate in dim light) and puts it back when it exits, so video calls aren't
@@ -476,7 +517,7 @@ about 9 cm), so they don't change with distance from the camera.
 |---|---|---|
 | `model` | `models/hand_landmarker.task` | Model file, relative to the project folder. The default one downloads automatically and is checked ([Setup, step 4](#4-the-app)); a model of your own is used as it is |
 | `num_hands` | `2` | Hands to track. 2 is needed for two-hand zoom; one-hand gestures follow the hand you were already using. Set 1 if you don't use zoom |
-| `second_hand_check_every` | `5` | With one hand in view, look for a second hand only every N frames (finding one switches to full two-hand tracking). Looking every frame (1) roughly doubles the CPU time per frame |
+| `second_hand_check_every` | `5` | With one hand in view, look for a second hand only every N frames (finding one switches to full two-hand tracking). Looking every frame (1) roughly doubles the CPU time per frame. The hand you're using is always tracked on every frame by the one-hand tracker, so these checks don't make it jitter |
 | `min_detection_confidence` | `0.6` | How sure the model must be to find a new hand. Lower finds hands sooner, but with more false detections |
 | `min_presence_confidence` | `0.6` | How sure it must be that the hand is still there |
 | `min_tracking_confidence` | `0.5` | Below this it searches for the hand again instead of tracking it |
@@ -631,8 +672,10 @@ The tests need no camera, `/dev/uinput` or desktop: the virtual devices run in d
 mode and record what they would have sent, and hands are fed in frame by frame on a
 fake 30 fps clock. They cover the model download, pose detection, pinch arming, clicks,
 double clicks, drags, scrolling and flings, pause, two-hand zoom, cursor movement in
-both modes, config loading and validation, and the camera reader's shutdown (with a
-fake camera). They read `config/gestures.yaml` but never your
+both modes, config loading and validation, where config and the model live (project
+folder or installed), the two-hand tracking switch (with fake trackers), clean shutdown
+on Ctrl+C / `kill`, the stalled-camera preview, and the camera reader's shutdown (with
+a fake camera). They read `config/gestures.yaml` but never your
 `local.yaml` or `calibration.yaml`, so your own settings don't change the results.
 
 The model download is tested offline. One test checks that the pinned model URL still

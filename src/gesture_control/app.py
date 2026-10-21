@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 import time
+from pathlib import Path
 
 from . import __version__
-from .config import DEFAULT_CONFIG_PATH, load_config, pointer_device_mode
+from .config import (
+    DEFAULT_CONFIG_PATH,
+    command,
+    load_config,
+    pointer_device_mode,
+    shown,
+)
 from .pointer import VirtualKeys, VirtualPointer
 
 PLACEHOLDER_AFTER_S = 0.5  # show the "Starting..." window only if startup is slower
@@ -78,7 +86,8 @@ def pointer_test(mode: str, dry_run: bool, abs_scale=(1.0, 1.0), ptr=None) -> No
                     time.sleep(0.01)
         if mode == "absolute":
             print("Done. If the cursor did not move, the tablet device isn't accepted: set "
-                  "cursor.mode: relative and cursor.relative.output: mouse in config/local.yaml.")
+                  "cursor.mode: relative and cursor.relative.output: mouse in "
+                  f"{shown('local.yaml')}.")
         else:
             print("Done.")
     finally:
@@ -162,8 +171,8 @@ def zoom_test(cfg, dry_run: bool) -> None:
                     keys.release("ctrl")
                 time.sleep(0.4)
             time.sleep(0.6)
-        print("Done. If nothing zoomed, try: uv run gesture-control --zoom-test "
-              "with zoom.method: keys in config/local.yaml")
+        print(f"Done. If nothing zoomed, try: {command()} --zoom-test "
+              f"with zoom.method: keys in {shown('local.yaml')}")
     finally:
         keys.close()
         ptr.close()
@@ -209,7 +218,7 @@ def _resolve_output(cfg, dry_run: bool, disp=None):
     auto = tb.auto_counts(disp)
     if not tb.calibrated(cfg) and auto is None:
         missing.append("couldn't read the screen size and scale from GNOME; run "
-                       "uv run gesture-control --calibrate-trackball once instead")
+                       f"{command()} --calibrate-trackball once instead")
     ptr = None
     if not missing:
         try:
@@ -241,12 +250,12 @@ def _resolve_output(cfg, dry_run: bool, disp=None):
         if saved is not None and now is not None and abs(float(saved) - now) > 1e-6:
             print("Note: GNOME's mouse speed changed since the trackball calibration, so "
                   "gestures move the cursor a different distance. Delete the relative: "
-                  "block from config/calibration.yaml to use the automatic value.")
+                  f"block from {shown('calibration.yaml')} to use the automatic value.")
         elif auto is not None and max(abs(cx / auto[0] - 1), abs(cy / auto[1] - 1)) > 0.03:
             print(f"Note: the trackball calibration ({cx:.0f} x {cy:.0f}) differs from what "
                   f"GNOME reports ({auto[0]:.0f} x {auto[1]:.0f} for {disp.describe()}). "
                   "Using the calibration; delete the relative: block from "
-                  "config/calibration.yaml to use the automatic value.")
+                  f"{shown('calibration.yaml')} to use the automatic value.")
     else:
         rc["trackball_counts"] = [auto[0], auto[1]]
         rc["_counts_source"] = f"{auto[0]:.0f}x{auto[1]:.0f} units, auto"
@@ -268,8 +277,63 @@ def _pick_primary(hands, prev_anchor, anchor_name):
     return min(hands[:2], key=dist)
 
 
+class ShutdownGuard:
+    """Ctrl+C, closing the terminal (SIGHUP) and `kill` (SIGTERM) all stop the app the
+    same clean way (a KeyboardInterrupt), so held buttons, keys and touchpad fingers
+    are released and the camera's settings put back.
+
+    Installed first thing in main(), so a signal during the model download or startup
+    is handled too. Once cleanup has begun (cleaning()), another signal must not cut
+    it short: the first repeat only says it's still stopping; a second one quits at
+    once (the kernel still removes the virtual devices, releasing what they held)."""
+
+    SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+    def __init__(self, exit_now=os._exit, say=print):
+        self._exit_now, self._say = exit_now, say
+        self._cleaning = False
+        self._repeats = 0
+        self._old: dict[int, object] = {}
+
+    def install(self) -> None:
+        for sig in self.SIGNALS:
+            self._old[sig] = signal.signal(sig, self._handle)
+
+    def restore(self) -> None:
+        for sig, old in self._old.items():
+            signal.signal(sig, old)
+        self._old.clear()
+
+    def cleaning(self) -> None:
+        self._cleaning = True
+
+    def _handle(self, signum, _frame) -> None:
+        if not self._cleaning:
+            raise KeyboardInterrupt
+        self._repeats += 1
+        if self._repeats == 1:
+            try:  # the terminal may already be gone (SIGHUP)
+                self._say("Still stopping (releasing buttons, closing the camera)... "
+                          "press Ctrl+C again to quit at once.")
+            except OSError:
+                pass
+        else:
+            self._exit_now(130)
+
+
 def main(argv=None) -> None:
     args = parse_args(argv)
+    guard = ShutdownGuard()
+    guard.install()
+    try:
+        _main(args, guard)
+    except KeyboardInterrupt:  # stopped before the main loop (download, a test mode)
+        print("\nStopped.")
+    finally:
+        guard.restore()
+
+
+def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
     try:
         cfg = load_config(args.config)
     except (OSError, ValueError, TypeError) as exc:
@@ -317,6 +381,8 @@ def main(argv=None) -> None:
         ensure_model(cfg["tracker"]["model"])
     except ModelError as exc:
         sys.exit(str(exc))
+    except KeyboardInterrupt:
+        sys.exit("\nDownload cancelled; nothing was changed.")  # .part file removed
 
     # Startup runs in parallel: the camera (slow to power up) and the hand tracker
     # (big imports, model load, first inference) start in background threads while the
@@ -354,20 +420,12 @@ def main(argv=None) -> None:
         return trk
 
     pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="startup")
-    camera_f = pool.submit(timed("camera", start_camera))
-    tracker_f = pool.submit(timed("hand tracker", load_tracker))
-
-    def _stop_on_signal(signum, _frame):
-        # Closing the terminal (SIGHUP) or `kill` (SIGTERM): shut down cleanly like
-        # Ctrl+C, so held keys/buttons/fingers are released and the camera restored.
-        raise KeyboardInterrupt
-
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, _stop_on_signal)
-
+    camera_f = tracker_f = None
     camera = tracker = overlay = None
     pointer = keys = touchpad = tp_settings = None
     try:
+        camera_f = pool.submit(timed("camera", start_camera))
+        tracker_f = pool.submit(timed("hand tracker", load_tracker))
         t = time.monotonic()
         from .controller import GestureController
         from .display import primary_display
@@ -429,10 +487,11 @@ def main(argv=None) -> None:
         print(f"Camera /dev/video{camera.index}: {w}x{h} @ {fps_set:.0f} fps | "
               f"cursor: {out_name} | {'DRY RUN' if args.dry_run else 'live'}")
         if cfg["_loaded"]:
-            print("Also loaded: " + ", ".join(f"config/{n}" for n in cfg["_loaded"]))
+            folder = Path(cfg["_config_dir"])
+            print("Also loaded: " + ", ".join(shown(n, folder) for n in cfg["_loaded"]))
         if device == "absolute" and "calibration.yaml" not in cfg["_loaded"]:
             print("Tip: if the cursor reaches the right/bottom screen edge too early, "
-                  "run: uv run gesture-control --calibrate")
+                  f"run: {command()} --calibrate")
         controller = GestureController(cfg, pointer, keys, touchpad, tp_settings)
         controller.set_frame_size(w, h)  # the size the camera gives, not the one asked for
         if (w, h) != (int(cfg["camera"]["width"]), int(cfg["camera"]["height"])) and w > 0:
@@ -451,7 +510,7 @@ def main(argv=None) -> None:
         mirror = bool(cfg["camera"]["mirror"])
         seq, fps, t_fps, n_fps = 0, 0.0, time.monotonic(), 0
         prev_anchor = prev_other = None
-        stall_since = None
+        stall_since = stall_said = None
 
         while True:
             item = camera.read(seq, timeout=1.0)
@@ -462,13 +521,18 @@ def main(argv=None) -> None:
                 if args.verbose:
                     for ev in status.events:
                         print(f"{time.strftime('%H:%M:%S')} {ev}")
-                stall_since = stall_since or time.monotonic()
-                if time.monotonic() - stall_since > 5:
-                    print("No frames from the camera for 5 s - is another app using it?")
-                    stall_since = time.monotonic()
+                now = time.monotonic()
+                if stall_since is None:
+                    stall_since = now - 1.0  # the read above already waited 1 s
+                    stall_said = stall_since
+                if now - stall_said > 5:
+                    print(f"No frames from the camera for {now - stall_since:.0f} s - "
+                          "is another app using it?")
+                    stall_said = now
                 if overlay:
-                    # Keep the window responsive (q / Esc / close) even without frames.
-                    key = overlay.poll()
+                    # Say so in the window (it would otherwise just freeze) and keep it
+                    # responsive (q / Esc / close) even without frames.
+                    key = overlay.show_stalled(now - stall_since)
                     if key in (ord("q"), 27) or overlay.closed():
                         break
                 continue
@@ -529,6 +593,7 @@ def main(argv=None) -> None:
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
     finally:
+        guard.cleaning()  # from here, a repeated Ctrl+C can't cut the cleanup short
         if keys:
             keys.close()  # releases Ctrl if it was held
         if touchpad:
@@ -541,6 +606,8 @@ def main(argv=None) -> None:
             overlay.close()
         # Quitting during startup: let the background start finish, then undo it.
         for fut, close in ((camera_f, "stop"), (tracker_f, "close")):
+            if fut is None:  # stopped before it was started
+                continue
             try:
                 obj = fut.result()
             except Exception:  # noqa: BLE001  (already reported, or never used)

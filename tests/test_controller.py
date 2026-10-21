@@ -574,6 +574,20 @@ def test_only_a_glide_that_ran_a_while_counts_as_caught(off_frames, stacks):
     assert ("fling (stacked)" in r.events) is stacks
 
 
+@pytest.mark.parametrize("per_frame", [0.00153, 0.00175, 0.0021])
+def test_slow_scroll_moves_exactly_as_far_as_the_hand(per_frame):
+    """Each scroll step used to be rounded to whole units and the rest dropped. With a
+    steady slow hand every step rounds the same way, so the page drifted by up to ~9%
+    (4.6 units -> 5 every frame). The fraction is now carried to the next step."""
+    r = Rig()
+    _start_scroll(r)
+    r.move(200, dy=-per_frame, pose=TWO)
+    r.hold(30, pose=TWO)                       # hand still: the filter catches up
+    expected = 200 * per_frame * r.ctl.scroll_units      # natural: hand up = wheel down
+    assert -r.ptr.scroll_total() == pytest.approx(expected, abs=r.ctl.scroll_units
+                                                  * r.ctl.scroll_deadzone + 1)
+
+
 def test_scroll_lift_when_hand_leaves_view_mid_swipe(rig):
     _start_scroll(rig)
     rig.move(6, dy=-0.05, pose=TWO)

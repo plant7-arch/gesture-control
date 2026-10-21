@@ -27,6 +27,8 @@ import sys
 import time
 from pathlib import Path
 
+from .config import command
+
 DEVICE_NAME = "gesture-control trackball"
 RULE_PATH = Path("/etc/udev/rules.d/99-gesture-control.rules")
 RULE = ('ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", '
@@ -163,7 +165,7 @@ def _measure(ptr, axis: int) -> int:
     first = _sweep(ptr, axis, sign, 0, 20000, 12, 0.025)
     if first is None:
         sys.exit("The cursor never reached the edge. Is the trackball output tagged? "
-                 "Run: uv run gesture-control --calibrate-trackball again after setup.")
+                 f"Run: {command()} --calibrate-trackball again after setup.")
     input("Got it. Now a slower pass to fine-tune: press Enter to start, then Enter "
           "again the moment it touches.")
     pin()

@@ -27,6 +27,8 @@ import subprocess
 import threading
 import time
 
+from .config import shown
+
 _now = time.monotonic  # the clock (tests replace it)
 MIN_CONTACT_S = 0.25  # longer than libinput's tap timeout (~180 ms)
 ANGLE_DEG = 30.0      # finger diagonal: 30 degrees above horizontal
@@ -262,14 +264,14 @@ class TouchpadSettings:
         if self.state == "disabled":
             return ("Zoom is off: the touchpad is turned off in Settings > Mouse & Touchpad. "
                     "Turn it on to zoom with the two-hand pinch, or set zoom.method: "
-                    "ctrl_scroll in config/local.yaml.")
+                    f"ctrl_scroll in {shown('local.yaml')}.")
         if self.state == "disabled-on-external-mouse":
             return ("Zoom is off, and so is your laptop touchpad while this app runs: the "
                     "touchpad is set to turn off while a mouse is connected, and this app's "
                     "virtual pointer counts as a mouse. Allow the touchpad with a mouse "
                     "connected (gsettings set org.gnome.desktop.peripherals.touchpad "
                     "send-events enabled), or set zoom.method: ctrl_scroll in "
-                    "config/local.yaml.")
+                    f"{shown('local.yaml')}.")
         return ""
 
     def stop(self) -> None:

@@ -63,6 +63,9 @@ def pytest_report_header(config):
         f"hand model: {model_state}",
         f"this computer (the tests don't need these): /dev/uinput {uinput}, camera {cams}",
         "config: tests read config/gestures.yaml only, never local.yaml or calibration.yaml",
+        "files: " + (f"project folder ({config_mod.CONFIG_DIR.name}/, models/)"
+                     if config_mod.FROM_CHECKOUT else
+                     f"installed ({config_mod.CONFIG_DIR}, {config_mod.DATA_ROOT})"),
         f"network test (pinned model URL): {net}",
     ]
 
