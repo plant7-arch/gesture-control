@@ -136,7 +136,8 @@ zoom:
                           # keys: Ctrl+= / Ctrl+- taps, for apps without Ctrl+wheel
   touchpad:
     gain: 1.0             # fingers spread = hands spread ^ gain. 1.5 = zoom faster
-    start_mm: 35          # finger distance when the pinch starts
+    start_mm: 45          # finger distance when the pinch starts (fingers sit on a
+                          #   diagonal, so libinput never mistakes the pinch for a scroll)
     width_mm: 100         # size of the virtual touchpad
     height_mm: 65
   # ctrl_scroll / keys only:

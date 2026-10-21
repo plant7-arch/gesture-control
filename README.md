@@ -205,7 +205,7 @@ tracking fast, so a zoom can take about 0.2 seconds to start.
 |---|---|
 | Startup says zoom is off | Turn the touchpad on in Settings > Mouse & Touchpad, or allow it while a mouse is connected: `gsettings set org.gnome.desktop.peripherals.touchpad send-events enabled` |
 | `--zoom-test` does nothing | Is the pointer over a pinch-capable app? Run `sudo libinput debug-events` during the test: no `GESTURE_PINCH` lines means GNOME isn't accepting the virtual touchpad; tell me what it prints |
-| Preview shows ZOOM but the app doesn't zoom | The app has no pinch support: use `zoom.method: ctrl_scroll` |
+| Preview shows ZOOM but the app doesn't zoom | The app has no pinch support: use `zoom.method: ctrl_scroll`. In `sudo libinput debug-events`, `POINTER_SCROLL_FINGER` lines instead of `GESTURE_PINCH` mean libinput took the pinch for a scroll: tell me |
 | Preview never shows ZOOM | Both index fingers must be up and the other fingers curled on both hands; keep both hands fully in view |
 | Zooms too slowly / too fast | Touchpad: `zoom.touchpad.gain: 1.5` / `0.7`. Ctrl + scroll: lower / raise `zoom.notch_ratio` |
 | A right-click menu appears when zooming starts | Tap-to-click turned a brief two-finger touch into a right click; tell me, this shouldn't happen (fingers stay down at least 0.25 s) |
@@ -408,8 +408,8 @@ Absolute mode only:
 | `enabled` | `true` | Two pointing hands zoom. Needs `tracker.num_hands: 2` |
 | `method` | `touchpad` | `touchpad`: a true two-finger pinch on a virtual touchpad (smooth, centred on the pointer; needs the touchpad turned on and an app with pinch support). `ctrl_scroll`: Ctrl + smooth mouse wheel (works in more apps, in steps). `keys`: Ctrl+= / Ctrl+− taps |
 | `touchpad.gain` | `1.0` | Finger spread = hand spread ^ gain. Higher = zooms faster |
-| `touchpad.start_mm` | `35` | Distance between the virtual fingers when a pinch starts |
-| `touchpad.width_mm`, `height_mm` | `100`, `65` | Size of the virtual touchpad. The fingers stay between 12 mm apart and 76% of the width, away from the edges, where touchpads ignore palms |
+| `touchpad.start_mm` | `45` | Distance between the virtual fingers when a pinch starts. The fingers sit on a diagonal, like a thumb and index finger |
+| `touchpad.width_mm`, `height_mm` | `100`, `65` | Size of the virtual touchpad. The fingers stay inside the zones where libinput ignores palms (outer 8% of the width) and thumbs (bottom 15%) |
 | `notch_ratio` | `1.15` | `ctrl_scroll` / `keys`: spreading your hands this many times further = one zoom step. Lower = zooms faster |
 | `invert` | `false` | `true` = spread to zoom out |
 | `settle_ms` | `150` | Ignore movement just after both hands start pointing |

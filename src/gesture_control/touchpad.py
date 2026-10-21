@@ -4,9 +4,15 @@ The app places two virtual fingers on this touchpad and moves them apart or toge
 with the user's hands. libinput sees a real two-finger pinch and GNOME passes it on to
 apps through the Wayland pointer-gestures protocol, exactly like a physical touchpad.
 
-Touchpad details that matter here:
-  * libinput may ignore contacts near the edges (palm) or bottom (thumb), so the
-    fingers stay in the central area.
+Touchpad details that matter here (from libinput's touchpad gesture code):
+  * Two touches less than 40 mm apart horizontally AND less than 7 mm apart
+    vertically, 150 ms after landing, are classified as a two-finger SCROLL, and
+    after 300 ms that can no longer become a pinch. So the fingers sit on a
+    diagonal (like a thumb and index finger), always at least 8 mm apart
+    vertically: then libinput decides purely by direction, and fingers moving apart
+    or together are a pinch however long the hands rested first.
+  * Contacts in the outer 8% of the width (palm) or below 85% of the height (thumb)
+    may be ignored, so the fingers stay inside those lines.
   * With tap-to-click on, a quick two-finger touch is a right click, so the fingers
     always stay down for at least MIN_CONTACT_S.
   * GNOME's touchpad settings apply to this device too (see TouchpadSettings).
@@ -19,7 +25,11 @@ import subprocess
 import threading
 import time
 
+import math
+
 MIN_CONTACT_S = 0.25  # longer than libinput's tap timeout (~180 ms)
+ANGLE_DEG = 30.0      # finger diagonal: 30 degrees above horizontal
+MIN_DY_MM = 8.0       # libinput's scroll box is < 7 mm vertically
 
 
 class VirtualTouchpad:
@@ -64,19 +74,36 @@ class VirtualTouchpad:
         time.sleep(0.5)  # let udev and the compositor pick up the new device
 
     # -- geometry -------------------------------------------------------------
+    # Safe area: 3 mm inside libinput's palm edges (8% of the width each side, 5% of
+    # the height at the top) and the thumb line (85% of the height).
+    def _safe(self) -> tuple[float, float, float, float]:
+        edge_x = min(8.0, self.width_mm * 0.08) + 3.0
+        return (edge_x, self.width_mm - edge_x,
+                self.height_mm * 0.05 + 3.0, self.height_mm * 0.85 - 3.0)
+
     @property
     def min_sep(self) -> float:
-        return 12.0
+        return MIN_DY_MM / math.sin(math.radians(ANGLE_DEG))
 
     @property
     def max_sep(self) -> float:
-        return self.width_mm * 0.76  # fingers stay clear of the edge (palm) zones
+        x0, x1, y0, y1 = self._safe()
+        a = math.radians(ANGLE_DEG)
+        return min((x1 - x0) / math.cos(a), (y1 - y0) / math.sin(a))
+
+    def finger_mm(self, sep: float) -> tuple[tuple[float, float], tuple[float, float]]:
+        """Finger positions in mm: lower-left ("thumb") and upper-right, around the
+        centre of the safe area. y grows downwards, as on the device."""
+        x0, x1, y0, y1 = self._safe()
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        a = math.radians(ANGLE_DEG)
+        hx, hy = sep / 2 * math.cos(a), sep / 2 * math.sin(a)
+        return (cx - hx, cy + hy), (cx + hx, cy - hy)
 
     def _positions(self, sep: float) -> tuple[tuple[int, int], tuple[int, int]]:
-        cx, cy = self.width_mm / 2, self.height_mm * 0.45  # above the bottom (thumb) zone
-        half = sep / 2
         to = lambda mm: int(round(mm * self.res))  # noqa: E731
-        return (to(cx - half), to(cy)), (to(cx + half), to(cy))
+        (ax, ay), (bx, by) = self.finger_mm(sep)
+        return (to(ax), to(ay)), (to(bx), to(by))
 
     # -- events ---------------------------------------------------------------
     def _w(self, etype, code, value) -> None:
