@@ -181,6 +181,16 @@ class GestureController:
         self.fling_tau = float(fl["time_constant_s"])
         self.fling_boost = float(fl["boost"])  # glide-only speed multiplier
         self.boost_ramp = max(float(fl["boost_ramp_s"]), 1e-3)
+        stk = fl["stack"]
+        self.stack_enabled = bool(stk["enabled"])
+        self.stack_window = float(stk["window_s"])
+        self.stack_factor = float(stk["factor"])
+        self.stack_settle_s = float(stk["settle_ms"]) / 1000.0
+        self.max_glide = float(fl["max_notches_per_s"]) * HI_RES_PER_NOTCH
+        self._carry = 0.0            # caught glide speed carried into the next fling
+        self._caught_v = 0.0         # glide speed when it was last caught by a touch
+        self._caught_t = -1e9
+        self._settle_s = 0.0         # settle time for the current scroll touch
         self._fling_v0 = 0.0         # release speed (hi-res units/s, signed), before boost
         self._fling_age = 0.0        # seconds since release
         self._last_t: float | None = None
@@ -226,7 +236,9 @@ class GestureController:
         self._events = []
         prev_t, self._last_t = self._last_t, t
         # Catch a glide on the very first frame of the peace sign, like touching the glass.
+        # Its speed is remembered: a quick swipe the same way adds it to the next fling.
         if self._fling_v and feats is not None and feats.pose == TWO and not self.paused:
+            self._caught_v, self._caught_t = self._fling_v, t
             self._stop_fling()
         self._apply_fling(t)
 
@@ -333,11 +345,11 @@ class GestureController:
                     # else keep the old baseline, so movement during a misread frame
                     # is caught up now instead of lost
                     self._scroll(anchor, t)
-            elif feats.pose != TWO and not (t - self._mode_since < self.scroll_settle_s):
+            elif feats.pose != TWO and not (t - self._mode_since < self._settle_s):
                 self._lift(t, prev_t)
             else:
                 # Only scroll on frames that really show the scroll pose.
-                settling = t - self._mode_since < self.scroll_settle_s or feats.pose != TWO
+                settling = t - self._mode_since < self._settle_s or feats.pose != TWO
                 self._scroll(anchor, t, settling=settling)
 
         return self._status(st)
@@ -348,6 +360,10 @@ class GestureController:
             self.pointer.release_all()
         if mode == Mode.SCROLL:
             self._stop_fling()  # touching the glass again stops a fling
+            # Right after catching a glide, track the hand almost at once, so a quick
+            # follow-up flick isn't lost in the settle period.
+            stacking = self._stack_ready(self._last_t if self._last_t is not None else 0.0)
+            self._settle_s = self.stack_settle_s if stacking else self.scroll_settle_s
         self._scroll_lifted = False
         self._scroll_hist.clear()
         self.mode = mode
@@ -520,17 +536,31 @@ class GestureController:
         if t_end <= t0:
             return
         v = (y0 - y_end) / (t_end - t0)  # frame heights per second, hand up = positive
+        stack_ok = self._stack_ready(t)
+        caught, self._caught_v = self._caught_v, 0.0  # a catch is used at most once
         if abs(v) < self.fling_min_speed:
             return
         self._fling_v0 = v * self.scroll_units * self.scroll_sign
+        # Stacking: a quick swipe the same way as the glide it just caught adds that
+        # glide's speed, so repeated flicks keep accelerating (up to max_notches_per_s).
+        self._carry = 0.0
+        if stack_ok and caught * self._fling_v0 > 0:
+            self._carry = caught * self.stack_factor
+            self._act("fling (stacked)")
         self._fling_v = self._fling_v0
         self._fling_age = 0.0
         self._fling_rem = 0.0
         # Continue from the previous frame's time, so this frame already moves the page.
         self._fling_t = prev_t if prev_t is not None and prev_t < t else t - 1 / 30
         self._lift_glided = True
-        self._act("fling")
+        if not self._carry:
+            self._act("fling")
         self._apply_fling(t)
+
+    def _stack_ready(self, t: float) -> bool:
+        """A glide was caught recently enough for the next fling to stack on it."""
+        return (self.stack_enabled and self._caught_v != 0.0
+                and t - self._caught_t <= self.stack_window)
 
     def _glide_speed(self, age: float) -> float:
         """Glide speed at a given age. Starts at exactly the release speed and eases into
@@ -543,7 +573,11 @@ class GestureController:
         d = tau - 2 * rmp * tau / (rmp + tau) + rmp * tau / (2 * tau + rmp)
         k = (self.fling_boost - 1.0) * tau / d
         ease = (1.0 - math.exp(-age / rmp)) ** 2
-        return self._fling_v0 * (1.0 + k * ease) * math.exp(-age / tau)
+        # A stacked glide's carried speed eases in the same way (scaled so it adds its
+        # full glide distance), keeping the release continuous with the drag.
+        carry = self._carry * tau / d
+        v = (self._fling_v0 * (1.0 + k * ease) + carry * ease) * math.exp(-age / tau)
+        return max(-self.max_glide, min(self.max_glide, v))
 
     def _apply_fling(self, t: float) -> None:
         if self._fling_v == 0.0:
@@ -567,6 +601,7 @@ class GestureController:
     def _stop_fling(self) -> None:
         self._fling_v = 0.0
         self._fling_v0 = 0.0
+        self._carry = 0.0
         self._fling_rem = 0.0
 
     def _act(self, text: str, quiet: bool = False) -> None:

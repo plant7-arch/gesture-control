@@ -49,6 +49,7 @@ In the preview window: `q` / `Esc` quits, `p` toggles pause.
 | Index + middle up (peace sign), move hand up/down | Scroll, phone-style: the page follows your hand |
 | ...swipe and leave the pose while still moving | Fling: the page keeps gliding, then slows down |
 | ...peace sign again while it glides | Stop the glide |
+| ...flick again quickly while it glides | Stack: the new fling adds the glide's speed |
 | Open palm | Neutral: nothing happens |
 | Fist held ~1 s | Pause / resume everything |
 
@@ -119,6 +120,17 @@ Drag up, open your palm and bring your hand back down (nothing scrolls back, bec
 your finger is off the glass), then make the peace sign and drag up again. Repeat, as
 you would on a phone.
 
+### 6. Stack flings: go faster and further
+
+![Stack flings](docs/scroll/6-stack.gif)
+
+While the page glides, bring your open palm back down, then flick again: peace sign and a
+quick swipe the same way. The peace sign catches the glide for a moment, and the new
+fling **adds the caught speed** to your swipe, so each quick flick goes faster than the
+last (up to `fling.max_notches_per_s`). This only happens if you release the new swipe
+within a second of the catch and swipe the same way; a slow drag or a pause in between
+gives a normal fling.
+
 ### If scrolling doesn't behave
 
 | Problem | Fix |
@@ -127,7 +139,9 @@ you would on a phone.
 | It scrolls the wrong way for me | `scroll:` `direction: traditional` in `config/local.yaml` |
 | It glides when I don't want | Stop your hand before opening your palm, raise `fling.min_speed`, or set `fling.enabled: false` |
 | It never glides | Open your palm during the swipe, not after it; or lower `fling.min_speed` to `0.6` |
-| Flings don't go far enough | Raise `fling.boost` (default 2.0), e.g. `3.0`. Drags are unaffected |
+| Flings don't go far enough | Raise `fling.boost` (default 2.0), e.g. `3.0`. Drags are unaffected. Or flick repeatedly (lesson 6) |
+| Repeated flicks don't speed up | Flick sooner after the catch (within `fling.stack.window_s`, 1 s) and the same way as the glide |
+| Repeated flicks get too fast | Lower `fling.stack.factor` (e.g. `0.5`) or `fling.max_notches_per_s` |
 | Glide lasts too long / too short | `fling.time_constant_s: 0.3` (stops sooner) or `0.7` (glides longer) |
 
 ## Configuration
@@ -207,6 +221,7 @@ To undo calibration, delete `config/calibration.yaml`.
 | Scroll faster | `scroll:` `notches_per_height: 40` |
 | Scroll like a mouse wheel instead of a phone | `scroll:` `direction: traditional` |
 | Fling further (drags unchanged) | `scroll:` `fling:` `boost: 3.0` |
+| Repeated flicks speed up less / not at all | `scroll:` `fling:` `stack:` `factor: 0.5` / `enabled: false` |
 | Longer / shorter glide after a fling | `scroll:` `fling:` `time_constant_s: 0.7` / `0.3` |
 | Turn the glide off | `scroll:` `fling:` `enabled: false` |
 | Pause/resume with a shorter fist hold | `pause:` `fist_hold_s: 0.7` |
@@ -306,6 +321,11 @@ Absolute mode only:
 | `fling.min_speed` | `0.8` | Hand speed when leaving the pose (camera-image heights per second) needed for a glide. Lower = glides more easily |
 | `fling.boost` | `2.0` | The glide goes this many times further than at plain swipe speed. Higher = flings go further, with the glide lasting only slightly longer. Doesn't affect dragging. `1.0` = glide at exactly your swipe speed |
 | `fling.boost_ramp_s` | `0.15` | The glide starts at exactly your drag speed, with no pause, and eases up to the boosted speed over about this long, so drag and glide feel like one motion. Raise it if the speed-up after letting go feels abrupt |
+| `fling.max_notches_per_s` | `300` | Speed limit for any glide, stacked or not |
+| `fling.stack.enabled` | `true` | A quick flick during a glide adds the glide's speed to the new fling |
+| `fling.stack.window_s` | `1.0` | The new swipe must be released within this long after the peace sign catches the glide |
+| `fling.stack.factor` | `1.0` | Share of the caught glide speed carried into the new fling (`0.5` = half) |
+| `fling.stack.settle_ms` | `60` | Settle time right after catching a glide, shorter than `settle_ms` so a quick flick isn't lost |
 | `fling.time_constant_s` | `0.45` | How long the glide lasts. Higher = glides longer and further |
 | `filter.*` | `1.0` / `5.0` / `1.0` | Smoothing, as above |
 

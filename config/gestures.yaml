@@ -107,6 +107,15 @@ scroll:
     boost_ramp_s: 0.15    # the glide starts at your drag speed and eases up to the boosted
                           #   speed over about this long, so drag and glide feel continuous
     time_constant_s: 0.45 # how long the glide lasts: higher = longer, further
+    max_notches_per_s: 300 # speed limit for any glide, stacked or not
+    stack:
+      # Flick again while the page glides: the peace sign catches the glide, and a quick
+      # swipe the same way adds the caught speed to the new fling. Repeated flicks keep
+      # accelerating, like a phone.
+      enabled: true
+      window_s: 1.0       # max time from catching the glide to releasing the next swipe
+      factor: 1.0         # share of the caught speed carried over (0.5 = half)
+      settle_ms: 60       # settle time after a catch (normal touches use settle_ms above)
   filter:
     min_cutoff: 1.0
     beta: 5.0

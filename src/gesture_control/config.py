@@ -77,6 +77,13 @@ DEFAULTS: dict[str, Any] = {
             "boost": 2.0,
             "boost_ramp_s": 0.15,
             "time_constant_s": 0.45,
+            "max_notches_per_s": 300,
+            "stack": {
+                "enabled": True,
+                "window_s": 1.0,
+                "factor": 1.0,
+                "settle_ms": 60,
+            },
         },
         "filter": {"min_cutoff": 1.0, "beta": 5.0, "d_cutoff": 1.0},
     },
