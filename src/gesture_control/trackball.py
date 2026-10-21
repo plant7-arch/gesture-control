@@ -85,7 +85,7 @@ def device_tagged(path: str | None, timeout: float = 1.5) -> bool:
             return False
         if time.monotonic() >= end:
             return False
-        time.sleep(0.2)
+        time.sleep(0.05)
 
 
 def missing_steps(cfg: dict) -> list[str]:

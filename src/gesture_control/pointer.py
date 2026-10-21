@@ -23,7 +23,7 @@ class VirtualPointer:
     """
 
     def __init__(self, mode: str = "absolute", dry_run: bool = False,
-                 name: str = "gesture-control pointer"):
+                 name: str = "gesture-control pointer", settle: float = 0.5):
         self.mode = mode
         self.name = name
         self.dry_run = dry_run
@@ -49,7 +49,9 @@ class VirtualPointer:
             rel = [e.REL_X, e.REL_Y] + rel
         caps[e.EV_REL] = rel
         self._ui = UInput(caps, name=name, vendor=0x1209, product=0x6763)
-        time.sleep(0.5)  # let the compositor pick up the new device
+        # Let the compositor pick up the new device before the first event. The app
+        # passes 0: its first event comes after the camera and tracker are up anyway.
+        time.sleep(settle)
 
     @property
     def device_path(self) -> str | None:
@@ -196,7 +198,8 @@ class VirtualKeys:
 
     KEYS = ("ctrl", "equal", "minus")
 
-    def __init__(self, dry_run: bool = False, name: str = "gesture-control keys"):
+    def __init__(self, dry_run: bool = False, name: str = "gesture-control keys",
+                 settle: float = 0.3):
         self.dry_run = dry_run
         self._down: set[str] = set()
         self._ui = None
@@ -209,7 +212,7 @@ class VirtualKeys:
         self._code = {"ctrl": e.KEY_LEFTCTRL, "equal": e.KEY_EQUAL, "minus": e.KEY_MINUS}
         self._ui = UInput({e.EV_KEY: list(self._code.values())}, name=name,
                           vendor=0x1209, product=0x6764)
-        time.sleep(0.3)
+        time.sleep(settle)
 
     def press(self, key: str) -> None:
         if key in self._down:

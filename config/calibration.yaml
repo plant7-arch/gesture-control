@@ -4,6 +4,3 @@
 # Delete this file (or a key) to undo a calibration.
 cursor:
   abs_scale: [1.0, 1.0]
-  relative:
-    trackball_counts: [1970, 1131]
-    trackball_mouse_speed: 0.0

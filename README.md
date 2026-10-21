@@ -75,9 +75,14 @@ Useful options:
 | `--zoom-test` | Zoom in, then out, under the mouse pointer (a real touchpad pinch by default; no camera), then exit |
 | `--start-paused` | Start paused; hold a fist ~1 s to begin |
 | `--no-preview` | Run without the camera window (Ctrl+C, or `kill`, to quit) |
-| `-v` | Print every action to the terminal |
+| `-v` | Print every action to the terminal, and how long startup took |
 | `--camera N` | Use `/dev/videoN` |
 | `--config PATH` | Use another config file |
+
+The preview window opens with a "Starting camera and hand tracker..." message while the
+camera powers up and the hand tracker loads (both at the same time, in the background);
+the live image follows about 2 to 3 seconds after you run the command. With `-v`, the app
+prints how long each part took.
 
 In the preview window: `q` / `Esc` quits, `p` toggles pause. The app also shuts down
 cleanly (buttons and virtual fingers released, camera settings put back) when it's

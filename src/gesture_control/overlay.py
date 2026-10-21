@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import cv2
 import numpy as np
 
 from .controller import Mode, Status
 from .features import HAND_CONNECTIONS, INDEX_TIP, MIDDLE_TIP, THUMB_TIP
-from .tracker import Hand
+
+if TYPE_CHECKING:  # importing tracker pulls in mediapipe, which loads in the background
+    from .tracker import Hand
 
 # BGR colours
 WHITE, GREY, BLACK = (255, 255, 255), (150, 150, 150), (0, 0, 0)
@@ -163,8 +165,18 @@ class Overlay:
         cv2.imshow(self.name, frame)
         return cv2.waitKey(1) & 0xFF
 
-    def poll(self) -> int:
-        return cv2.waitKey(1) & 0xFF
+    def poll(self, wait_ms: int = 1) -> int:
+        return cv2.waitKey(max(1, int(wait_ms))) & 0xFF
+
+    def placeholder(self, text: str) -> None:
+        """A dark frame with a message, shown while the camera and tracker start."""
+        w, h = int(self.cfg["camera"]["width"]), int(self.cfg["camera"]["height"])
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        img[:] = (32, 32, 32)
+        _text(img, text, (20, h // 2), WHITE, 0.6, 1)
+        _text(img, "q / Esc to quit", (20, h // 2 + 30), WHITE, 0.45, 1)
+        cv2.imshow(self.name, img)
+        cv2.waitKey(1)
 
     def closed(self) -> bool:
         try:

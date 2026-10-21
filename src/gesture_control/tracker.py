@@ -58,6 +58,16 @@ class HandTracker:
         self._frame = 0
         self._last_ts = -1
 
+    def warm_up(self, width: int = 640, height: int = 480) -> None:
+        """Run each model once on a blank image: the first inference is much slower
+        (memory setup), so do it while waiting for the camera, not on the first frame."""
+        blank = np.zeros((height, width, 3), dtype=np.uint8)
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=blank)
+        for lm in (self._landmarker, self._one):
+            if lm is not None:
+                lm.detect_for_video(image, 0)
+        self._last_ts = 0
+
     def _detect(self, landmarker, image, ts) -> list[Hand]:
         result = landmarker.detect_for_video(image, ts)
         hands = []

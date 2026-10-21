@@ -42,9 +42,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def _make_pointer(mode: str, dry_run: bool) -> VirtualPointer:
+def _make_pointer(mode: str, dry_run: bool, settle: float = 0.5) -> VirtualPointer:
     try:
-        return VirtualPointer(mode=mode, dry_run=dry_run)
+        return VirtualPointer(mode=mode, dry_run=dry_run, settle=settle)
     except PermissionError:
         sys.exit(
             "Permission denied on /dev/uinput.\n"
@@ -83,18 +83,18 @@ def pointer_test(mode: str, dry_run: bool, abs_scale=(1.0, 1.0)) -> None:
         ptr.close()
 
 
-def _make_keys(dry_run: bool) -> VirtualKeys:
+def _make_keys(dry_run: bool, settle: float = 0.3) -> VirtualKeys:
     try:
-        return VirtualKeys(dry_run=dry_run)
+        return VirtualKeys(dry_run=dry_run, settle=settle)
     except PermissionError:
         sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
 
 
-def _make_touchpad(cfg, dry_run: bool):
+def _make_touchpad(cfg, dry_run: bool, settle: float = 0.5):
     from .touchpad import VirtualTouchpad
 
     try:
-        return VirtualTouchpad(cfg["zoom"]["touchpad"], dry_run=dry_run)
+        return VirtualTouchpad(cfg["zoom"]["touchpad"], dry_run=dry_run, settle=settle)
     except PermissionError:
         sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
 
@@ -211,7 +211,8 @@ def _resolve_output(cfg, dry_run: bool, disp=None):
     ptr = None
     if not missing:
         try:
-            ptr = VirtualPointer(mode="relative", dry_run=dry_run, name=tb.DEVICE_NAME)
+            ptr = VirtualPointer(mode="relative", dry_run=dry_run, name=tb.DEVICE_NAME,
+                                 settle=0.0)
         except PermissionError:
             sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
         ptr_path = None if dry_run else ptr.device_path
@@ -308,38 +309,44 @@ def main(argv=None) -> None:
             f"  mkdir -p {PROJECT_ROOT / 'models'} && wget -O {model} \\\n    {MODEL_URL}"
         )
 
-    # Heavy imports after argument handling so --help and --pointer-test stay fast.
-    from .capture import Camera
-    from .controller import GestureController
-    from .display import primary_display
-    from .features import (
-        POINT,
-        anchor_point,
-        compute_features,
-        hand_spread,
-        palm_length,
-    )
-    from .tracker import HandTracker, feature_points
+    # Startup runs in parallel: the camera (slow to power up) and the hand tracker
+    # (big imports, model load, first inference) start in background threads while the
+    # virtual devices are created and a placeholder window is shown.
+    from concurrent.futures import ThreadPoolExecutor
 
-    disp = primary_display()
-    _resolve_aspect(cfg, disp)
-    pointer = _resolve_output(cfg, args.dry_run, disp)
-    device = pointer_device_mode(cfg)
-    if pointer is None:
-        pointer = _make_pointer(device, args.dry_run)
-    zoom_on = bool(cfg["zoom"]["enabled"])
-    method = cfg["zoom"]["method"]
-    keys = _make_keys(args.dry_run) if zoom_on and method != "touchpad" else None
-    touchpad = tp_settings = None
-    from .touchpad import TouchpadSettings
+    t0 = time.monotonic()
+    timings: dict[str, float] = {}
 
-    if zoom_on and method == "touchpad":
-        touchpad = _make_touchpad(cfg, args.dry_run)
-        tp_settings = TouchpadSettings()
-        if not tp_settings.usable:
-            print(tp_settings.message())
-    elif TouchpadSettings.read() == "disabled-on-external-mouse":
-        print(TouchpadSettings.mouse_note())
+    def timed(name, fn):
+        def run():
+            t = time.monotonic()
+            try:
+                return fn()
+            finally:
+                timings[name] = time.monotonic() - t
+        return run
+
+    def start_camera():
+        from .capture import Camera
+
+        cam = Camera(cfg["camera"])
+        try:
+            cam.start()
+        except Exception:
+            cam.stop()
+            raise
+        return cam
+
+    def load_tracker():
+        from .tracker import HandTracker
+
+        trk = HandTracker(cfg["tracker"])
+        trk.warm_up(int(cfg["camera"]["width"]), int(cfg["camera"]["height"]))
+        return trk
+
+    pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="startup")
+    camera_f = pool.submit(timed("camera", start_camera))
+    tracker_f = pool.submit(timed("hand tracker", load_tracker))
 
     def _stop_on_signal(signum, _frame):
         # Closing the terminal (SIGHUP) or `kill` (SIGTERM): shut down cleanly like
@@ -348,11 +355,57 @@ def main(argv=None) -> None:
 
     for sig in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, _stop_on_signal)
-    camera = Camera(cfg["camera"])
-    tracker = None
-    overlay = None
+
+    camera = tracker = overlay = None
+    pointer = keys = touchpad = tp_settings = None
     try:
-        camera.start()
+        t = time.monotonic()
+        from .controller import GestureController
+        from .display import primary_display
+        from .features import (
+            POINT,
+            anchor_point,
+            compute_features,
+            hand_spread,
+            palm_length,
+        )
+        from .touchpad import TouchpadSettings
+
+        disp = primary_display()
+        _resolve_aspect(cfg, disp)
+        pointer = _resolve_output(cfg, args.dry_run, disp)
+        device = pointer_device_mode(cfg)
+        if pointer is None:
+            pointer = _make_pointer(device, args.dry_run, settle=0.0)
+        zoom_on = bool(cfg["zoom"]["enabled"])
+        method = cfg["zoom"]["method"]
+        if zoom_on and method != "touchpad":
+            keys = _make_keys(args.dry_run, settle=0.0)
+        if zoom_on and method == "touchpad":
+            touchpad = _make_touchpad(cfg, args.dry_run, settle=0.0)
+            tp_settings = TouchpadSettings()
+            if not tp_settings.usable:
+                print(tp_settings.message())
+        elif TouchpadSettings.read() == "disabled-on-external-mouse":
+            print(TouchpadSettings.mouse_note())
+        timings["devices"] = time.monotonic() - t
+
+        if cfg["preview"]["enabled"]:
+            from .overlay import Overlay
+
+            overlay = Overlay(cfg)
+            overlay.placeholder("Starting camera and hand tracker...")
+        while not (camera_f.done() and tracker_f.done()):
+            if overlay:
+                key = overlay.poll(wait_ms=30)
+                if key in (ord("q"), 27) or overlay.closed():
+                    raise KeyboardInterrupt
+            else:
+                time.sleep(0.03)
+        camera = camera_f.result()   # re-raises a camera error here
+        tracker = tracker_f.result()
+        from .tracker import feature_points
+
         w, h, fps_set = camera.actual
         out_name = (cfg["cursor"]["mode"] if cfg["cursor"]["mode"] == "absolute"
                     else f"relative ({cfg['cursor']['relative']['output']}"
@@ -366,17 +419,14 @@ def main(argv=None) -> None:
         if device == "absolute" and "calibration.yaml" not in cfg["_loaded"]:
             print("Tip: if the cursor reaches the right/bottom screen edge too early, "
                   "run: uv run gesture-control --calibrate")
-        tracker = HandTracker(cfg["tracker"])
         controller = GestureController(cfg, pointer, keys, touchpad, tp_settings)
         if cfg["zoom"]["enabled"] and int(cfg["tracker"]["num_hands"]) < 2:
             print("Note: zoom needs tracker.num_hands: 2 - two-hand zoom is off.")
-        if cfg["preview"]["enabled"]:
-            from .overlay import Overlay
-
-            overlay = Overlay(cfg)
+        if overlay:
             print("Preview: q / Esc quit, p pause/resume. Hold a fist ~1 s to pause/resume.")
         else:
             print("Running without preview. Ctrl+C to quit. Hold a fist ~1 s to pause/resume.")
+        first_frame = True
 
         ext, curl = cfg["pose"]["extend_ratio"], cfg["pose"]["curl_ratio"]
         anchor_name = cfg["cursor"]["anchor"]
@@ -439,6 +489,13 @@ def main(argv=None) -> None:
                 overlay.draw(frame, hand, status, fps, latency_ms,
                              hand.handedness if hand else "", anchor, other)
                 key = overlay.show(frame)
+            if first_frame:
+                first_frame = False
+                if args.verbose:
+                    parts = ", ".join(f"{k} {v:.1f} s" for k, v in timings.items())
+                    print(f"Startup: first frame shown {time.monotonic() - t0:.1f} s after "
+                          f"the app started ({parts}; these run at the same time)")
+            if overlay:
                 if key in (ord("q"), 27) or overlay.closed():
                     break
                 if key == ord("p"):
@@ -454,12 +511,19 @@ def main(argv=None) -> None:
             touchpad.close()  # lifts the virtual fingers
         if tp_settings:
             tp_settings.stop()
-        pointer.close()
-        camera.stop()
-        if tracker:
-            tracker.close()
+        if pointer:
+            pointer.close()
         if overlay:
             overlay.close()
+        # Quitting during startup: let the background start finish, then undo it.
+        for fut, close in ((camera_f, "stop"), (tracker_f, "close")):
+            try:
+                obj = fut.result()
+            except Exception:  # noqa: BLE001  (already reported, or never used)
+                obj = None
+            if obj is not None:
+                getattr(obj, close)()
+        pool.shutdown()
         print("Stopped.")
 
 

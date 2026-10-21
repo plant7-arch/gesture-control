@@ -37,7 +37,7 @@ class VirtualTouchpad:
     """Two-finger pinches on a virtual clickpad. Sizes are in millimetres."""
 
     def __init__(self, cfg: dict, dry_run: bool = False,
-                 name: str = "gesture-control touchpad"):
+                 name: str = "gesture-control touchpad", settle: float = 0.5):
         self.width_mm = float(cfg["width_mm"])
         self.height_mm = float(cfg["height_mm"])
         self.res = 40  # units per mm
@@ -73,7 +73,7 @@ class VirtualTouchpad:
         self._ui = UInput(caps, name=name, vendor=0x1209, product=0x6765,
                           bustype=e.BUS_USB,
                           input_props=[e.INPUT_PROP_POINTER, e.INPUT_PROP_BUTTONPAD])
-        time.sleep(0.5)  # let udev and the compositor pick up the new device
+        time.sleep(settle)  # let udev and the compositor pick up the new device
 
     # -- geometry -------------------------------------------------------------
     # Safe area: 3 mm inside libinput's palm edges (8% of the width each side, 5% of
