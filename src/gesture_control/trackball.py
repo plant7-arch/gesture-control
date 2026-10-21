@@ -202,7 +202,7 @@ def run_calibration(cfg: dict, dry_run: bool, config_path: str | None) -> None:
     try:
         ptr = VirtualPointer(mode="relative", dry_run=dry_run, name=DEVICE_NAME)
     except PermissionError:
-        sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
+        sys.exit("Permission denied on /dev/uinput: see README > Setup, step 3.")
     try:
         if not dry_run and ptr.device_path is None:
             sys.exit("Couldn't find the virtual trackball's /dev/input/event node. "

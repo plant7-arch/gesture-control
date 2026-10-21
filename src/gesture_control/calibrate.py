@@ -72,7 +72,7 @@ def run_calibration(dry_run: bool, config_path: str | None) -> None:
     try:
         ptr = VirtualPointer(mode="absolute", dry_run=dry_run)
     except PermissionError:
-        sys.exit("Permission denied on /dev/uinput (see README / setup steps).")
+        sys.exit("Permission denied on /dev/uinput: see README > Setup, step 3.")
 
     try:
         sx = _measure(ptr, 0)

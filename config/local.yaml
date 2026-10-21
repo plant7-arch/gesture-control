@@ -1,7 +1,0 @@
-cursor:
-  relative:
-    screen_aspect: 1.78
-
-scroll:
-  fling:
-    boost: 3.0

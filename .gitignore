@@ -9,3 +9,11 @@ wheels/
 # Virtual environments
 .venv
 models/*.task
+
+# Personal settings (never in a build)
+config/local.yaml
+config/calibration.yaml
+
+# Model download in progress, or a replaced model
+models/*.part
+models/*.old

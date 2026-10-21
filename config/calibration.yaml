@@ -1,6 +1,0 @@
-# Written by: gesture-control --calibrate / --calibrate-trackball
-# cursor.abs_scale: where the cursor reaches the right / bottom screen edge.
-# cursor.relative.trackball_counts: movement units across the screen.
-# Delete this file (or a key) to undo a calibration.
-cursor:
-  abs_scale: [1.0, 1.0]

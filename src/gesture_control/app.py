@@ -7,16 +7,10 @@ import signal
 import sys
 import time
 
-from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_config, pointer_device_mode
+from .config import DEFAULT_CONFIG_PATH, load_config, pointer_device_mode
 from .pointer import VirtualKeys, VirtualPointer
 
 PLACEHOLDER_AFTER_S = 0.5  # show the "Starting..." window only if startup is slower
-
-MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
-    "hand_landmarker/float16/latest/hand_landmarker.task"
-)
-
 
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -51,10 +45,11 @@ def _make_pointer(mode: str, dry_run: bool, settle: float = 0.5) -> VirtualPoint
         sys.exit(
             "Permission denied on /dev/uinput.\n"
             "Check: `groups` lists 'uinput' and `ls -l /dev/uinput` shows group uinput.\n"
-            "If you just added the group, log out and back in."
+            "If you just added the group, log out and back in. Setup: README > Setup, step 3."
         )
     except FileNotFoundError:
-        sys.exit("/dev/uinput not found. Run: sudo modprobe uinput")
+        sys.exit("/dev/uinput not found. Run: sudo modprobe uinput "
+                 "(and README > Setup, step 3 to load it at every boot)")
 
 
 def pointer_test(mode: str, dry_run: bool, abs_scale=(1.0, 1.0)) -> None:
@@ -89,7 +84,7 @@ def _make_keys(dry_run: bool, settle: float = 0.3) -> VirtualKeys:
     try:
         return VirtualKeys(dry_run=dry_run, settle=settle)
     except PermissionError:
-        sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
+        sys.exit("Permission denied on /dev/uinput: see README > Setup, step 3.")
 
 
 def _make_touchpad(cfg, dry_run: bool, settle: float = 0.5):
@@ -98,7 +93,7 @@ def _make_touchpad(cfg, dry_run: bool, settle: float = 0.5):
     try:
         return VirtualTouchpad(cfg["zoom"]["touchpad"], dry_run=dry_run, settle=settle)
     except PermissionError:
-        sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
+        sys.exit("Permission denied on /dev/uinput: see README > Setup, step 3.")
 
 
 def pinch_test(cfg, dry_run: bool) -> None:
@@ -216,7 +211,7 @@ def _resolve_output(cfg, dry_run: bool, disp=None):
             ptr = VirtualPointer(mode="relative", dry_run=dry_run, name=tb.DEVICE_NAME,
                                  settle=0.0)
         except PermissionError:
-            sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
+            sys.exit("Permission denied on /dev/uinput: see README > Setup, step 3.")
         ptr_path = None if dry_run else ptr.device_path
         if not dry_run and not tb.device_tagged(ptr_path):
             ptr.close()
@@ -302,14 +297,14 @@ def main(argv=None) -> None:
         pointer_test(pointer_device_mode(cfg), args.dry_run, cfg["cursor"]["abs_scale"])
         return
 
-    from pathlib import Path
+    from .model import ModelError, ensure_model
 
-    model = Path(cfg["tracker"]["model"])
-    if not model.exists():
-        sys.exit(
-            f"Model not found: {model}\nDownload it with:\n"
-            f"  mkdir -p {PROJECT_ROOT / 'models'} && wget -O {model} \\\n    {MODEL_URL}"
-        )
+    # First start: download the hand model (checked against its SHA-256). Done before
+    # anything else starts, so a failed download leaves nothing half set up.
+    try:
+        ensure_model(cfg["tracker"]["model"])
+    except ModelError as exc:
+        sys.exit(str(exc))
 
     # Startup runs in parallel: the camera (slow to power up) and the hand tracker
     # (big imports, model load, first inference) start in background threads while the

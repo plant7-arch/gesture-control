@@ -3,6 +3,78 @@
 Control your mouse with hand gestures from a webcam. Uses MediaPipe Hand Landmarker for
 tracking and a virtual uinput device for input, so it works on Wayland (Ubuntu 26.04 GNOME).
 
+## Setup (once per computer)
+
+### 1. System packages
+
+```bash
+sudo apt install -y build-essential git curl v4l-utils ffmpeg \
+  libgl1 libglib2.0-0t64 libxcb-cursor0
+```
+
+`build-essential` compiles python-evdev; `v4l-utils` and `ffmpeg` test the camera (step
+2); `libgl1`, `libglib2.0-0t64` and `libxcb-cursor0` are needed for the preview window.
+If apt says `libglib2.0-0t64` doesn't exist, use `libglib2.0-0`. Check you're on Wayland:
+`echo $XDG_SESSION_TYPE` prints `wayland`.
+
+### 2. Check the webcam
+
+```bash
+v4l2-ctl --list-devices                      # usually /dev/video0
+v4l2-ctl -d /dev/video0 --list-formats-ext   # look for MJPG at 640x480
+ffplay -f v4l2 -input_format mjpeg -video_size 640x480 -i /dev/video0   # q closes it
+```
+
+The `ffplay` window should show live video. On Ubuntu's desktop the logged-in user can
+use the camera without extra groups; only if you get "Permission denied", run
+`sudo usermod -aG video $USER` and log out and back in.
+
+### 3. Virtual input (uinput)
+
+The app moves the cursor, clicks and zooms through virtual input devices created via
+`/dev/uinput`. By default only root may use it, so give a `uinput` group access:
+
+```bash
+sudo modprobe uinput                                     # load it now...
+echo uinput | sudo tee /etc/modules-load.d/uinput.conf   # ...and at every boot
+sudo groupadd -f uinput
+sudo usermod -aG uinput $USER
+echo 'KERNEL=="uinput", GROUP="uinput", MODE="0660", OPTIONS+="static_node=uinput"' \
+  | sudo tee /etc/udev/rules.d/99-uinput.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Log out and back in (or reboot) so the new group takes effect, then check:
+
+```bash
+groups | grep uinput    # lists uinput
+ls -l /dev/uinput       # crw-rw----+ 1 root uinput ... /dev/uinput
+```
+
+If the app says "Permission denied on /dev/uinput", one of these checks fails; if it
+says "/dev/uinput not found", the module isn't loaded (`sudo modprobe uinput`).
+
+### 4. The app
+
+Install [uv](https://docs.astral.sh/uv/) if you don't have it
+(`curl -LsSf https://astral.sh/uv/install.sh | sh`), then in the project folder:
+
+```bash
+uv sync
+```
+
+The hand-tracking model (`models/hand_landmarker.task`, 7.8 MB) downloads automatically
+the first time the app starts. The app uses one exact, tested version of it (downloaded
+from a versioned URL, not "latest") and checks its SHA-256 at every start:
+
+- A missing model is downloaded; the download is only put in place once it's verified.
+- A model that doesn't match (an interrupted download, another version) is moved to
+  `models/hand_landmarker.task.old` and the right one is downloaded.
+- Without internet on the first start, the app says so and prints the `curl` command to
+  get the file by hand.
+- A model of your own, set with `tracker.model` in `config/local.yaml`, is used as it
+  is and never checked or replaced.
+
 ## Run
 
 ```bash
@@ -287,11 +359,13 @@ and later layers win:
 |---|---|---|
 | 1 | Built-in defaults (`src/gesture_control/config.py`) | the code |
 | 2 | `config/gestures.yaml` | each build (overwritten by `unzip -o`) |
-| 3 | `config/calibration.yaml` | `--calibrate` |
+| 3 | `config/calibration.yaml` | `--calibrate` / `--calibrate-trackball` |
 | 4 | `config/local.yaml` | **you** |
 
-Put your changes in **`config/local.yaml`**. It's never included in a build, so updates
-can't overwrite it. Use `gestures.yaml` as a reference for names and defaults, but don't
+All of these files are optional: without `local.yaml` and `calibration.yaml` the app runs
+on the defaults. Put your changes in **`config/local.yaml`**. It and `calibration.yaml`
+are personal: they're never included in a build (so updates can't overwrite them) and
+git ignores them (so they're never committed). Use `gestures.yaml` as a reference for names and defaults, but don't
 edit it: the next build replaces it.
 
 Settings are read once at startup. After editing, quit the app (`q`) and start it again.
@@ -389,7 +463,7 @@ about 9 cm), so they don't change with distance from the camera.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `model` | `models/hand_landmarker.task` | Model file, relative to the project folder |
+| `model` | `models/hand_landmarker.task` | Model file, relative to the project folder. The default one downloads automatically and is checked ([Setup, step 4](#4-the-app)); a model of your own is used as it is |
 | `num_hands` | `2` | Hands to track. 2 is needed for two-hand zoom; one-hand gestures follow the hand you were already using. Set 1 if you don't use zoom |
 | `second_hand_check_every` | `5` | With one hand in view, look for a second hand only every N frames (finding one switches to full two-hand tracking). Looking every frame (1) roughly doubles the CPU time per frame |
 | `min_detection_confidence` | `0.6` | How sure the model must be to find a new hand. Lower finds hands sooner, but with more false detections |
@@ -544,10 +618,14 @@ uv run pytest
 
 The tests need no camera, `/dev/uinput` or desktop: the virtual devices run in dry-run
 mode and record what they would have sent, and hands are fed in frame by frame on a
-fake 30 fps clock. They cover pose detection, pinch arming, clicks, double clicks,
-drags, scrolling and flings, pause, two-hand zoom, cursor movement in both modes, and
-config loading and validation. They read `config/gestures.yaml` but never your
+fake 30 fps clock. They cover the model download, pose detection, pinch arming, clicks,
+double clicks, drags, scrolling and flings, pause, two-hand zoom, cursor movement in
+both modes, and config loading and validation. They read `config/gestures.yaml` but never your
 `local.yaml` or `calibration.yaml`, so your own settings don't change the results.
+
+The model download is tested offline. One test checks that the pinned model URL still
+serves exactly the expected file; it needs internet, so it only runs when asked:
+`GESTURE_NET_TESTS=1 uv run pytest -k online`.
 
 ## Layout
 
@@ -556,8 +634,9 @@ tests/                        automated tests (uv run pytest)
 docs/scroll/                  scrolling pictures and animations (README)
 docs/zoom/                    zoom picture (README)
 config/gestures.yaml          settings (overwritten by new builds)
-config/local.yaml             your overrides (optional, never overwritten)
-config/calibration.yaml       written by --calibrate and --calibrate-trackball
+config/local.yaml             your overrides (optional; never in a build, git-ignored)
+config/calibration.yaml       written by --calibrate and --calibrate-trackball (same)
+models/                       hand model, downloaded on first start (git-ignored)
 src/gesture_control/
   app.py          main loop and CLI
   calibrate.py    screen-edge calibration (--calibrate)
@@ -566,6 +645,7 @@ src/gesture_control/
   touchpad.py     virtual touchpad for the two-hand pinch
   capture.py      threaded camera reader (newest frame only)
   tracker.py      MediaPipe Hand Landmarker wrapper
+  model.py        hand model download and SHA-256 check
   features.py     finger states, pinch distances, pose classification
   filters.py      One Euro filter
   controller.py   gesture state machine (modes, debounce, pinch, pause)
