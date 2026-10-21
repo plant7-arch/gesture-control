@@ -60,7 +60,9 @@ class Overlay:
         self.pinch_start = float(cfg["pinch"]["start"])
         self.pinch_release = float(cfg["pinch"]["release"])
         fix_qt_fonts()
-        cv2.namedWindow(self.name, cv2.WINDOW_AUTOSIZE)
+        # GUI_NORMAL: no toolbar (pan/zoom/save buttons) or status bar from OpenCV's
+        # Qt window, just the image.
+        cv2.namedWindow(self.name, cv2.WINDOW_AUTOSIZE | cv2.WINDOW_GUI_NORMAL)
 
     def draw(self, frame: np.ndarray, hand: Hand | None, st: Status,
              fps: float, latency_ms: float, handedness: str = "",

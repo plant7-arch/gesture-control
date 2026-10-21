@@ -10,6 +10,8 @@ import time
 from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_config, pointer_device_mode
 from .pointer import VirtualKeys, VirtualPointer
 
+PLACEHOLDER_AFTER_S = 0.5  # show the "Starting..." window only if startup is slower
+
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
     "hand_landmarker/float16/latest/hand_landmarker.task"
@@ -390,18 +392,23 @@ def main(argv=None) -> None:
             print(TouchpadSettings.mouse_note())
         timings["devices"] = time.monotonic() - t
 
-        if cfg["preview"]["enabled"]:
+        preview = bool(cfg["preview"]["enabled"])
+        if preview:
             from .overlay import Overlay
-
-            overlay = Overlay(cfg)
-            overlay.placeholder("Starting camera and hand tracker...")
+        # A quick start opens the window straight onto the camera image; only a slow one
+        # (more than PLACEHOLDER_AFTER_S) shows a "Starting..." message first.
         while not (camera_f.done() and tracker_f.done()):
+            if preview and overlay is None and time.monotonic() - t0 >= PLACEHOLDER_AFTER_S:
+                overlay = Overlay(cfg)
+                overlay.placeholder("Starting camera and hand tracker...")
             if overlay:
                 key = overlay.poll(wait_ms=30)
                 if key in (ord("q"), 27) or overlay.closed():
                     raise KeyboardInterrupt
             else:
-                time.sleep(0.03)
+                time.sleep(0.02)
+        if preview and overlay is None:
+            overlay = Overlay(cfg)
         camera = camera_f.result()   # re-raises a camera error here
         tracker = tracker_f.result()
         from .tracker import feature_points

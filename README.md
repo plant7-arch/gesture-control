@@ -79,10 +79,10 @@ Useful options:
 | `--camera N` | Use `/dev/videoN` |
 | `--config PATH` | Use another config file |
 
-The preview window opens with a "Starting camera and hand tracker..." message while the
-camera powers up and the hand tracker loads (both at the same time, in the background);
-the live image follows about 2 to 3 seconds after you run the command. With `-v`, the app
-prints how long each part took.
+The camera powers up and the hand tracker loads at the same time, in the background, so
+the preview usually appears within about a second. If startup takes longer than half a
+second, the window opens early with a "Starting camera and hand tracker..." message. With
+`-v`, the app prints how long each part took.
 
 In the preview window: `q` / `Esc` quits, `p` toggles pause. The app also shuts down
 cleanly (buttons and virtual fingers released, camera settings put back) when it's
