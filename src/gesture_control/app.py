@@ -31,7 +31,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--pointer-test", action="store_true",
                    help="move the cursor around without the camera, then exit")
     p.add_argument("--zoom-test", action="store_true",
-                   help="zoom in then out in the focused window (no camera), then exit")
+                   help="zoom in then out under the pointer (a real touchpad pinch by "
+                        "default; no camera), then exit")
     p.add_argument("--calibrate", action="store_true",
                    help="find where the screen edges are (absolute mode), then exit")
     p.add_argument("-v", "--verbose", action="store_true", help="print every action")
@@ -86,8 +87,54 @@ def _make_keys(dry_run: bool) -> VirtualKeys:
         sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
 
 
+def _make_touchpad(cfg, dry_run: bool):
+    from .touchpad import VirtualTouchpad
+
+    try:
+        return VirtualTouchpad(cfg["zoom"]["touchpad"], dry_run=dry_run)
+    except PermissionError:
+        sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
+
+
+def pinch_test(cfg, dry_run: bool) -> None:
+    """A real two-finger pinch on the virtual touchpad: out (zoom in), then in."""
+    from .touchpad import TouchpadSettings
+
+    settings = TouchpadSettings(start=False)
+    if not settings.usable:
+        print(settings.message())
+        return
+    print("Pinch test (touchpad): click into Firefox, an image in Image Viewer, or a PDF in")
+    print("Document Viewer now, and leave the mouse pointer over it.")
+    print("Tip: in another terminal, `sudo libinput debug-events` shows GESTURE_PINCH lines.")
+    for n in (3, 2, 1):
+        print(f"  starting in {n}...")
+        time.sleep(1)
+    tp = _make_touchpad(cfg, dry_run)
+    try:
+        start = float(cfg["zoom"]["touchpad"]["start_mm"])
+        for label, target in (("in", tp.max_sep - 2), ("out", tp.min_sep + 2)):
+            print(f"Pinching to zoom {label}...")
+            tp.begin(start)
+            time.sleep(0.15)
+            steps = 40
+            for i in range(1, steps + 1):
+                tp.move(start + (target - start) * i / steps)
+                time.sleep(0.02)
+            time.sleep(0.2)
+            tp.end()
+            time.sleep(0.8)
+        print("Done. If nothing zoomed: check `sudo libinput debug-events` for GESTURE_PINCH "
+              "lines, and try an app listed in the README (Zoom section).")
+    finally:
+        tp.close()
+
+
 def zoom_test(cfg, dry_run: bool) -> None:
     method = cfg["zoom"]["method"]
+    if method == "touchpad":
+        pinch_test(cfg, dry_run)
+        return
     print(f"Zoom test ({method}): click into a browser or image viewer window now.")
     for n in (3, 2, 1):
         print(f"  starting in {n}...")
@@ -178,7 +225,17 @@ def main(argv=None) -> None:
 
     device = pointer_device_mode(cfg)
     pointer = _make_pointer(device, args.dry_run)
-    keys = _make_keys(args.dry_run) if cfg["zoom"]["enabled"] else None
+    zoom_on = bool(cfg["zoom"]["enabled"])
+    method = cfg["zoom"]["method"]
+    keys = _make_keys(args.dry_run) if zoom_on and method != "touchpad" else None
+    touchpad = tp_settings = None
+    if zoom_on and method == "touchpad":
+        from .touchpad import TouchpadSettings
+
+        touchpad = _make_touchpad(cfg, args.dry_run)
+        tp_settings = TouchpadSettings()
+        if not tp_settings.usable:
+            print(tp_settings.message())
     camera = Camera(cfg["camera"])
     tracker = None
     overlay = None
@@ -193,7 +250,7 @@ def main(argv=None) -> None:
             print("Tip: if the cursor reaches the right/bottom screen edge too early, "
                   "run: uv run gesture-control --calibrate")
         tracker = HandTracker(cfg["tracker"])
-        controller = GestureController(cfg, pointer, keys)
+        controller = GestureController(cfg, pointer, keys, touchpad, tp_settings)
         if cfg["zoom"]["enabled"] and int(cfg["tracker"]["num_hands"]) < 2:
             print("Note: zoom needs tracker.num_hands: 2 - two-hand zoom is off.")
         if cfg["preview"]["enabled"]:
@@ -254,6 +311,8 @@ def main(argv=None) -> None:
             if args.verbose:
                 for ev in status.events:
                     print(f"{time.strftime('%H:%M:%S')} {ev}")
+            if status.zoom_blocked and any("unavailable" in ev for ev in status.events):
+                print(status.zoom_blocked)  # the preview points here for the details
 
             if overlay:
                 overlay.draw(frame, hand, status, fps, latency_ms,
@@ -270,6 +329,10 @@ def main(argv=None) -> None:
     finally:
         if keys:
             keys.close()  # releases Ctrl if it was held
+        if touchpad:
+            touchpad.close()  # lifts the virtual fingers
+        if tp_settings:
+            tp_settings.stop()
         pointer.close()
         camera.stop()
         if tracker:

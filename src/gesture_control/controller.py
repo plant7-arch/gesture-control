@@ -5,7 +5,8 @@ Modes
   MOVE   - "point" pose: cursor follows the hand (absolute) or its movement
            (relative, touchpad-like); pinches click/drag
   ZOOM   - two hands, both pointing: spreading them apart zooms in, bringing them
-           together zooms out (Ctrl+wheel, or Ctrl+= / Ctrl+- taps)
+           together zooms out. Default: a true two-finger pinch on a virtual touchpad;
+           optionally Ctrl+wheel or Ctrl+= / Ctrl+- taps
   SCROLL - "two" pose: vertical hand movement scrolls, phone-style by default: the
            content follows the hand, and leaving the pose mid-swipe flings it
 
@@ -56,6 +57,7 @@ class Status:
     fist_progress: float = 0.0
     zoom_spread: float | None = None  # index-tip distance in palm lengths (two hands)
     zoom_hands: bool = False          # two pointing hands seen this frame
+    zoom_blocked: str = ""            # why zoom can't work right now (shown in preview)
     last_action: str = ""
     events: list[str] = field(default_factory=list)
 
@@ -130,21 +132,30 @@ class PinchDetector:
 
 class GestureController:
     def __init__(self, cfg: dict[str, Any], pointer: VirtualPointer,
-                 keys: VirtualKeys | None = None):
+                 keys: VirtualKeys | None = None, touchpad=None, touchpad_settings=None):
         self.cfg = cfg
         self.pointer = pointer
         self.keys = keys
+        self.touchpad = touchpad
+        self.tp_settings = touchpad_settings
         zc = cfg["zoom"]
-        self.zoom_enabled = bool(zc["enabled"]) and keys is not None
+        self.zoom_method = zc["method"]
+        needs = touchpad if self.zoom_method == "touchpad" else keys
+        self.zoom_enabled = bool(zc["enabled"]) and needs is not None
+        tc = zc["touchpad"]
+        self.tp_start_mm = float(tc["start_mm"])
+        self.tp_gain = float(tc["gain"])
+        self._tp_ref: float | None = None   # log spread when the fingers went down
+        self._blocked_said = False
         self.zoom_debounce = Debouncer(cfg["pose"]["debounce_frames"])
         self.zoom_step = math.log(float(zc["notch_ratio"]))
         self.zoom_sign = -1.0 if zc["invert"] else 1.0
-        self.zoom_method = zc["method"]
         self.zoom_settle_s = float(zc["settle_ms"]) / 1000.0
         self.zoom_deadzone = float(zc["deadzone"])
         self.zoom_ctrl_idle_s = float(zc["ctrl_release_ms"]) / 1000.0
         self.zoom_filter = OneEuroFilter(**zc["filter"])
         self._zoom_prev: float | None = None
+        self._zoom_status_blocked = ""
         self._zoom_acc = 0.0
         self._zoom_last_step = -1e9
         pc, cc, sc = cfg["pinch"], cfg["cursor"], cfg["scroll"]
@@ -317,7 +328,9 @@ class GestureController:
                     self._mode_since = t
                     self._act("zoom")
                 st.zoom_spread = zoom[1]
+                self._zoom_status_blocked = ""
                 self._zoom(zoom[1], t)
+                st.zoom_blocked = self._zoom_status_blocked
                 return self._status(st)
             if self.mode == Mode.ZOOM:
                 self._enter(Mode.IDLE)
@@ -408,8 +421,12 @@ class GestureController:
     def _enter(self, mode: Mode) -> None:
         if self.mode == Mode.MOVE and mode != Mode.MOVE:
             self.pointer.release_all()
-        if self.mode == Mode.ZOOM and mode != Mode.ZOOM and self.keys is not None:
-            self.keys.release_all()
+        if self.mode == Mode.ZOOM and mode != Mode.ZOOM:
+            if self.keys is not None:
+                self.keys.release_all()
+            if self.touchpad is not None:
+                self.touchpad.end()  # lift the virtual fingers
+            self._tp_ref = None
         if mode == Mode.ZOOM:
             self.pointer.release_all()
             self._stop_fling()
@@ -670,6 +687,9 @@ class GestureController:
         if self._zoom_prev is None or t - self._mode_since < self.zoom_settle_s:
             self._zoom_prev = x  # hands still settling into the pose
             return
+        if self.zoom_method == "touchpad":
+            self._zoom_touchpad(x, t)
+            return
         dx = x - self._zoom_prev
         if abs(dx) < self.zoom_deadzone:
             if (self.keys.is_down("ctrl") and self.zoom_method == "ctrl_scroll"
@@ -694,6 +714,38 @@ class GestureController:
                 self.keys.release("ctrl")
                 self._zoom_acc -= 1.0 if self._zoom_acc > 0 else -1.0
                 self._act("zoom in" if key == "equal" else "zoom out", quiet=True)
+
+    def _zoom_touchpad(self, x: float, t: float) -> None:
+        """True pinch: two virtual fingers whose distance follows the hands' spread.
+        Spreading the hands by a factor f moves the fingers apart by f ** gain, and apps
+        zoom by the fingers' distance ratio, just like on a real touchpad. When the
+        fingers reach the touchpad's edge zone (or get too close), they lift and land
+        again at the start distance, the way you'd re-grip on a real touchpad."""
+        tp = self.touchpad
+        if self.tp_settings is not None and not self.tp_settings.usable:
+            if tp.is_down:
+                tp.end()
+            self._tp_ref = None
+            self._zoom_status_blocked = self.tp_settings.message()
+            if not self._blocked_said:
+                self._blocked_said = True
+                self._act("zoom unavailable: touchpad is off")
+            return
+        self._blocked_said = False
+        if not tp.is_down:
+            self._tp_ref = x
+            tp.begin(self.tp_start_mm)
+            return
+        sep = self.tp_start_mm * math.exp((x - self._tp_ref) * self.tp_gain)
+        if sep > tp.max_sep or sep < tp.min_sep:
+            tp.end()                       # re-grip: lift and land again at the start
+            self._tp_ref = x
+            tp.begin(self.tp_start_mm)
+            return
+        if abs(sep - tp.separation) >= 0.05:
+            zoom_in = sep > tp.separation
+            tp.move(sep)
+            self._act("zoom in" if zoom_in else "zoom out", quiet=True)
 
     def _act(self, text: str, quiet: bool = False) -> None:
         self._last_action = text

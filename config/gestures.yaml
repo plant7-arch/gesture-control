@@ -127,15 +127,24 @@ scroll:
 
 zoom:
   # Two hands, both index fingers up: spread them apart to zoom in, bring them together
-  # to zoom out, like a touchpad pinch. Clicks and cursor movement pause while zooming.
+  # to zoom out. Clicks and cursor movement pause while zooming.
   enabled: true
-  method: ctrl_scroll     # ctrl_scroll: Ctrl + smooth wheel (browsers, viewers, editors)
-                          #   | keys: Ctrl+= / Ctrl+- taps, for apps without Ctrl+wheel
+  method: touchpad        # touchpad: a true two-finger pinch on a virtual touchpad
+                          #   (smooth, centred on the pointer; needs the touchpad turned
+                          #   on in Settings and an app with pinch support)
+                          # ctrl_scroll: Ctrl + smooth wheel (works in more apps, in steps)
+                          # keys: Ctrl+= / Ctrl+- taps, for apps without Ctrl+wheel
+  touchpad:
+    gain: 1.0             # fingers spread = hands spread ^ gain. 1.5 = zoom faster
+    start_mm: 35          # finger distance when the pinch starts
+    width_mm: 100         # size of the virtual touchpad
+    height_mm: 65
+  # ctrl_scroll / keys only:
   notch_ratio: 1.15       # spreading hands 15% further = one zoom step. Lower = zoom faster
   invert: false           # true = spread to zoom out
   settle_ms: 150          # ignore movement just after both hands start pointing
   deadzone: 0.004         # ignore tiny spread changes (log scale) so still hands don't zoom
-  ctrl_release_ms: 400    # let go of Ctrl after the hands are still this long
+  ctrl_release_ms: 400    # ctrl_scroll: let go of Ctrl after the hands are still this long
   filter:
     min_cutoff: 1.0
     beta: 2.0

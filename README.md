@@ -30,7 +30,7 @@ Useful options:
 | `--dry-run` | Track and recognize gestures, but print actions instead of moving the mouse |
 | `--mode absolute` | Hand position = screen position (the default is relative, touchpad-like) |
 | `--calibrate` | Find the screen edges for absolute mode, then exit |
-| `--zoom-test` | Zoom in, then out, in the window you click into (no camera), then exit |
+| `--zoom-test` | Zoom in, then out, under the mouse pointer (a real touchpad pinch by default; no camera), then exit |
 | `--start-paused` | Start paused; hold a fist ~1 s to begin |
 | `--no-preview` | Run without the camera window (Ctrl+C to quit) |
 | `-v` | Print every action to the terminal |
@@ -155,26 +155,60 @@ with the current spread.
 
 ![The preview during a zoom: both hands pointing, a magenta line joins the fingertips](docs/zoom/preview.png)
 
-- Zoom works in any app that zooms with Ctrl + mouse wheel: web browsers, PDF and image
-  viewers, LibreOffice, most code editors. For apps that only zoom with Ctrl+= / Ctrl+−,
-  set `zoom.method: keys`.
-- Spreading your hands 15% further is one zoom step. The spread is measured in palm
-  lengths, so it works the same at any distance from the camera.
-- Clicks, cursor movement and scrolling pause while both hands point, and Ctrl is
-  released as soon as a hand drops, leaves the view, or the app stops.
+By default the app performs a **true touchpad pinch**: it creates a virtual touchpad
+and moves two virtual fingers on it apart or together with your hands. GNOME sees a real
+two-finger pinch, so apps zoom smoothly and centred on the mouse pointer, exactly as with
+a laptop touchpad.
+
+- **Point at what you want to zoom.** The zoom centres on the mouse pointer.
+- **Apps with pinch support:** Firefox, Chromium-based browsers running on Wayland,
+  GNOME apps such as Image Viewer (Loupe), Document Viewer (Papers) and Maps. Apps
+  without pinch support (LibreOffice, many older apps) ignore it; for those, see
+  `ctrl_scroll` below.
+- **Hands spread 1.5x = fingers spread 1.5x**, and the app zooms by that ratio. If you
+  spread or close your hands a lot, the virtual fingers lift and land again in the
+  middle of the touchpad (a re-grip, as on a real touchpad), so you can keep going.
+- **The touchpad must be turned on** in Settings > Mouse & Touchpad. GNOME's touchpad
+  settings apply to the virtual touchpad too. If the touchpad is off, or set to turn off
+  while a mouse is connected (this app's virtual pointer counts as a mouse), the app
+  says so at startup and in the preview, and doesn't zoom. It doesn't switch to Ctrl +
+  wheel on its own.
+- Clicks, cursor movement and scrolling pause while both hands point. The virtual
+  fingers are lifted as soon as a hand drops, leaves the view, or the app stops.
 - Keep a little space between your hands: if they touch, the tracker may see them as one
   hand and the zoom ends.
-- Check it works without the camera: click into a browser window right after starting
-  `uv run gesture-control --zoom-test`.
+
+**Check it works without the camera:** run `uv run gesture-control --zoom-test` and, within
+3 seconds, put the mouse pointer over a page in Firefox or an image in Image Viewer. It
+pinches out (zoom in), then in (zoom out). To see what GNOME receives, run
+`sudo libinput debug-events` in a second terminal first: a working pinch prints
+`GESTURE_PINCH_BEGIN`, `GESTURE_PINCH_UPDATE` and `GESTURE_PINCH_END` lines from the
+device "gesture-control touchpad".
+
+### Ctrl + scroll instead (opt-in)
+
+To zoom with Ctrl + mouse wheel, which works in more apps (including LibreOffice and
+most editors) but in steps rather than smoothly, set this in `config/local.yaml`:
+
+```yaml
+zoom:
+  method: ctrl_scroll   # or: keys (Ctrl+= / Ctrl+-, for apps without Ctrl+wheel zoom)
+```
+
+With these methods, spreading your hands 15% further is one zoom step
+(`zoom.notch_ratio`), and the touchpad settings don't matter.
 
 With one hand in view, the app looks for a second hand only every 5th frame to keep
 tracking fast, so a zoom can take about 0.2 seconds to start.
 
 | Problem | Fix |
 |---|---|
-| Nothing zooms, preview shows ZOOM | The app doesn't zoom with Ctrl + wheel: use `zoom.method: keys` |
+| Startup says zoom is off | Turn the touchpad on in Settings > Mouse & Touchpad, or allow it while a mouse is connected: `gsettings set org.gnome.desktop.peripherals.touchpad send-events enabled` |
+| `--zoom-test` does nothing | Is the pointer over a pinch-capable app? Run `sudo libinput debug-events` during the test: no `GESTURE_PINCH` lines means GNOME isn't accepting the virtual touchpad; tell me what it prints |
+| Preview shows ZOOM but the app doesn't zoom | The app has no pinch support: use `zoom.method: ctrl_scroll` |
 | Preview never shows ZOOM | Both index fingers must be up and the other fingers curled on both hands; keep both hands fully in view |
-| Zooms too fast / too slow | Raise / lower `zoom.notch_ratio` (default 1.15) |
+| Zooms too slowly / too fast | Touchpad: `zoom.touchpad.gain: 1.5` / `0.7`. Ctrl + scroll: lower / raise `zoom.notch_ratio` |
+| A right-click menu appears when zooming starts | Tap-to-click turned a brief two-finger touch into a right click; tell me, this shouldn't happen (fingers stay down at least 0.25 s) |
 | Zoom starts too slowly | `tracker:` `second_hand_check_every: 2` (uses more CPU with one hand) |
 | Don't need zoom | `zoom:` `enabled: false` and `tracker:` `num_hands: 1` |
 
@@ -260,8 +294,9 @@ To undo calibration, delete `config/calibration.yaml`.
 | Turn the glide off | `scroll:` `fling:` `enabled: false` |
 | Pause/resume with a shorter fist hold | `pause:` `fist_hold_s: 0.7` |
 | Use hand position = screen position | `cursor:` `mode: absolute` |
-| Zoom faster / slower with two hands | `zoom:` `notch_ratio: 1.08` / `1.25` |
-| Zoom with Ctrl+= / Ctrl+− instead of Ctrl+wheel | `zoom:` `method: keys` |
+| Zoom faster / slower with two hands | `zoom:` `touchpad:` `gain: 1.5` / `0.7` |
+| Zoom with Ctrl + wheel instead of a touchpad pinch | `zoom:` `method: ctrl_scroll` |
+| Zoom with Ctrl+= / Ctrl+− | `zoom:` `method: keys` |
 | Use a different camera | `camera:` `index: 2` |
 
 ### All settings
@@ -371,12 +406,15 @@ Absolute mode only:
 | Setting | Default | What it does |
 |---|---|---|
 | `enabled` | `true` | Two pointing hands zoom. Needs `tracker.num_hands: 2` |
-| `method` | `ctrl_scroll` | `ctrl_scroll`: Ctrl + smooth mouse wheel (browsers, viewers, editors). `keys`: Ctrl+= / Ctrl+− taps, for apps without Ctrl+wheel zoom |
-| `notch_ratio` | `1.15` | Spreading your hands this many times further = one zoom step (one wheel notch). Lower = zooms faster |
+| `method` | `touchpad` | `touchpad`: a true two-finger pinch on a virtual touchpad (smooth, centred on the pointer; needs the touchpad turned on and an app with pinch support). `ctrl_scroll`: Ctrl + smooth mouse wheel (works in more apps, in steps). `keys`: Ctrl+= / Ctrl+− taps |
+| `touchpad.gain` | `1.0` | Finger spread = hand spread ^ gain. Higher = zooms faster |
+| `touchpad.start_mm` | `35` | Distance between the virtual fingers when a pinch starts |
+| `touchpad.width_mm`, `height_mm` | `100`, `65` | Size of the virtual touchpad. The fingers stay between 12 mm apart and 76% of the width, away from the edges, where touchpads ignore palms |
+| `notch_ratio` | `1.15` | `ctrl_scroll` / `keys`: spreading your hands this many times further = one zoom step. Lower = zooms faster |
 | `invert` | `false` | `true` = spread to zoom out |
 | `settle_ms` | `150` | Ignore movement just after both hands start pointing |
 | `deadzone` | `0.004` | Ignore tiny spread changes (log scale), so still hands don't drift the zoom |
-| `ctrl_release_ms` | `400` | Let go of Ctrl after the hands have been still this long |
+| `ctrl_release_ms` | `400` | `ctrl_scroll`: let go of Ctrl after the hands have been still this long |
 | `filter.*` | `1.0` / `2.0` / `1.0` | Smoothing of the spread, as for the cursor |
 
 #### `double_click`

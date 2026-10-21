@@ -90,13 +90,19 @@ DEFAULTS: dict[str, Any] = {
     },
     "zoom": {
         "enabled": True,
-        "method": "ctrl_scroll",
+        "method": "touchpad",
         "notch_ratio": 1.15,
         "invert": False,
         "settle_ms": 150,
         "deadzone": 0.004,
         "ctrl_release_ms": 400,
         "filter": {"min_cutoff": 1.0, "beta": 2.0, "d_cutoff": 1.0},
+        "touchpad": {
+            "gain": 1.0,
+            "start_mm": 35,
+            "width_mm": 100,
+            "height_mm": 65,
+        },
     },
     "double_click": {
         "enabled": True,
@@ -202,8 +208,12 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     boost = cfg["scroll"]["fling"]["boost"]
     if not isinstance(boost, (int, float)) or isinstance(boost, bool) or not 0.1 <= boost <= 10:
         raise ValueError("scroll.fling.boost must be a number between 0.1 and 10")
-    if cfg["zoom"]["method"] not in ("ctrl_scroll", "keys"):
-        raise ValueError("zoom.method must be 'ctrl_scroll' or 'keys'")
+    if cfg["zoom"]["method"] not in ("touchpad", "ctrl_scroll", "keys"):
+        raise ValueError("zoom.method must be 'touchpad', 'ctrl_scroll' or 'keys'")
+    tpc = cfg["zoom"]["touchpad"]
+    if not 12 < float(tpc["start_mm"]) < float(tpc["width_mm"]) * 0.76:
+        raise ValueError("zoom.touchpad.start_mm must be above 12 and below "
+                         "0.76 x zoom.touchpad.width_mm")
     nr = cfg["zoom"]["notch_ratio"]
     if not isinstance(nr, (int, float)) or isinstance(nr, bool) or not 1.01 <= nr <= 3:
         raise ValueError("zoom.notch_ratio must be a number between 1.01 and 3")

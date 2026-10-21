@@ -119,6 +119,13 @@ class Overlay:
         if st.last_action:
             _text(frame, st.last_action, (10, 164), GREY, 0.45)
 
+        if st.zoom_blocked:
+            _shade(frame, 0, h - 44, w, h)
+            why = ("touchpad turns off when a mouse is connected" if "mouse is connected"
+                   in st.zoom_blocked else "touchpad is turned off in Settings")
+            _text(frame, f"Zoom is off: {why} (see terminal)", (12, h - 18), MAGENTA, 0.48)
+            return frame
+
         # Bottom band: fist-hold progress (pause/resume), or the paused hint.
         if st.fist_progress > 0 or st.paused:
             _shade(frame, 0, h - 44, w, h)
