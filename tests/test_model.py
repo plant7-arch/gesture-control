@@ -154,3 +154,19 @@ def test_pinned_model_is_still_online(tmp_path):
     m.download(target)
     assert target.stat().st_size == m.MODEL_SIZE
     assert m.sha256_of(target) == m.MODEL_SHA256
+
+
+def test_failed_download_leaves_the_old_model_where_it_was(served, monkeypatch):
+    """A wrong model plus no internet: the error says nothing was changed, so the old
+    file must still be in place (it's only moved aside after a verified download)."""
+    _, local = served
+    local.parent.mkdir()
+    local.write_bytes(b"some other model")
+
+    def offline(*a, **k):
+        raise OSError("network is unreachable")
+    monkeypatch.setattr(urllib.request, "urlopen", offline)
+    with pytest.raises(m.ModelError):
+        m.ensure_model(local, _quiet)
+    assert local.read_bytes() == b"some other model"
+    assert sorted(p.name for p in local.parent.iterdir()) == ["hand_landmarker.task"]

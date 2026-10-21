@@ -54,14 +54,17 @@ def _make_pointer(mode: str, dry_run: bool, settle: float = 0.5) -> VirtualPoint
                  "(and README > Setup, step 3 to load it at every boot)")
 
 
-def pointer_test(mode: str, dry_run: bool, abs_scale=(1.0, 1.0)) -> None:
+def pointer_test(mode: str, dry_run: bool, abs_scale=(1.0, 1.0), ptr=None) -> None:
+    """ptr: the pointer the app itself would use (e.g. the virtual trackball), if
+    already created; otherwise a plain one for `mode` is made here."""
     if mode == "absolute":
         what = ("visit the centre and then each corner of the screen. If it stops short of "
                 "or overshoots the right/bottom corners, run --calibrate")
     else:
         what = "trace a small square"
     print(f"Pointer test ({mode}): the cursor should {what}.")
-    ptr = _make_pointer(mode, dry_run)
+    if ptr is None:
+        ptr = _make_pointer(mode, dry_run)
     try:
         if mode == "absolute":
             sx, sy = abs_scale
@@ -296,7 +299,12 @@ def main(argv=None) -> None:
         zoom_test(cfg, args.dry_run)
         return
     if args.pointer_test:
-        pointer_test(pointer_device_mode(cfg), args.dry_run, cfg["cursor"]["abs_scale"])
+        # Test the device the app will really use: settle cursor.relative.output
+        # ("auto" -> trackball or tablet) the same way a normal start does.
+        from .display import primary_display
+
+        ptr = _resolve_output(cfg, args.dry_run, primary_display())
+        pointer_test(pointer_device_mode(cfg), args.dry_run, cfg["cursor"]["abs_scale"], ptr)
         return
 
     from .model import ModelError, ensure_model
@@ -442,7 +450,12 @@ def main(argv=None) -> None:
         while True:
             item = camera.read(seq, timeout=1.0)
             if item is None:
-                controller.tick()  # e.g. a scheduled finger lift
+                # No frame for a second: let go of buttons, Ctrl and touchpad fingers
+                # (and perform a scheduled finger lift).
+                status = controller.stalled(time.monotonic())
+                if args.verbose:
+                    for ev in status.events:
+                        print(f"{time.strftime('%H:%M:%S')} {ev}")
                 stall_since = stall_since or time.monotonic()
                 if time.monotonic() - stall_since > 5:
                     print("No frames from the camera for 5 s - is another app using it?")

@@ -769,3 +769,73 @@ def test_actions_are_per_frame(rig):
     assert st.actions == ["scroll down"]              # this frame only, not a history
     rig.hold(30, pose=TWO)                            # hand stopped; smoothing settles
     assert rig.step(pose=TWO).actions == []
+
+
+# -- glitches and stalls ------------------------------------------------------------------
+
+def test_one_missed_frame_of_the_second_hand_does_not_end_the_zoom(zoom_rig):
+    """The tracker sometimes misses a hand for a frame: the zoom (and its fingers on the
+    virtual touchpad) carries on, like it does when a pose is misread for a frame."""
+    r = zoom_rig()
+    _zoom(r, [3.0] * 20)
+    r.step(pose=POINT, zoom=None)               # second hand missed for one frame
+    st = _zoom(r, [3.0] * 3)
+    assert st.mode == Mode.ZOOM
+    assert "zoom end" not in r.events
+    assert [e[0] for e in r.tp.events].count("down") == 1
+
+
+def test_missed_frame_keeps_ctrl_scroll_zoom_going(zoom_rig):
+    r = zoom_rig(zoom={"method": "ctrl_scroll"})
+    _zoom(r, [3.0] * 10)
+    r.step(pose=POINT, zoom=None)
+    _zoom(r, _ramp(3.0, 3.0 * 1.15 ** 2, 10))
+    assert r.events.count("zoom") == 1 and "zoom end" not in r.events
+
+
+def test_camera_stall_releases_a_drag(rig):
+    rig.point()
+    rig.left_pinch()
+    assert rig.ptr.is_down("left")
+    st = rig.ctl.stalled(rig.t + 1.0)           # no frames: update() never runs
+    assert not rig.ptr.is_down("left")
+    assert st.mode == Mode.IDLE and "camera stalled: released" in st.events
+
+
+def test_camera_stall_lets_go_of_ctrl(zoom_rig):
+    r = zoom_rig(zoom={"method": "ctrl_scroll"})
+    _zoom(r, [3.0] * 10)
+    _zoom(r, _ramp(3.0, 3.0 * 1.15 ** 2, 10))
+    assert r.keys.is_down("ctrl")
+    r.ctl.stalled(r.t + 1.0)
+    assert not r.keys.is_down("ctrl")
+
+
+def test_camera_stall_lifts_touchpad_fingers(zoom_rig):
+    r = zoom_rig()
+    _zoom(r, [3.0] * 20)
+    assert r.tp.is_down
+    r.ctl.stalled(r.t + 1.0)
+    assert not r.tp.is_down
+
+
+def test_camera_stall_while_idle_does_nothing(rig):
+    rig.hold(5, pose=PALM)
+    st = rig.ctl.stalled(rig.t + 1.0)
+    assert st.events == [] and rig.ptr.log == []
+
+
+@pytest.mark.parametrize("boost", [0.1, 0.2, 0.3, 0.5, 1.0, 2.0])
+def test_glide_never_turns_round(boost):
+    """However low fling.boost is (it may be 0.1), the glide only ever moves the page
+    the way it was flung."""
+    r = Rig(make_config(scroll={"fling": {"boost": boost}}))
+    c = r.ctl
+    c._fling_v0 = c._fling_v = 6000.0
+    c._fling_age, c._fling_t, c._carry = 0.0, 0.0, 0.0
+    t = 0.0
+    while c._fling_v and t < 10:
+        t += DT
+        c._apply_fling(t)
+    steps = [e[1] for e in r.ptr.of("scroll")]
+    assert steps and all(s > 0 for s in steps)

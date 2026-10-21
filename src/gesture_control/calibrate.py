@@ -84,6 +84,10 @@ def run_calibration(dry_run: bool, config_path: str | None) -> None:
     finally:
         ptr.close()
 
+    if dry_run:
+        # The cursor never moved, so these numbers mean nothing: don't save them.
+        print(f"\nDry run: would save abs_scale [{sx:.3f}, {sy:.3f}]; nothing written.")
+        return
     out = save_calibration((sx, sy), config_path)
     print(f"\nSaved abs_scale [{sx:.3f}, {sy:.3f}] to {out}")
     print("Check it with: uv run gesture-control --pointer-test "

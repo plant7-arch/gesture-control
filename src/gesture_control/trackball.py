@@ -218,6 +218,10 @@ def run_calibration(cfg: dict, dry_run: bool, config_path: str | None) -> None:
         return
     finally:
         ptr.close()
+    if dry_run:
+        # The cursor never moved, so these numbers mean nothing: don't save them.
+        print(f"\nDry run: would save {cx} x {cy} units; nothing written.")
+        return
     out = update_calibration({"cursor": {"relative": {
         "trackball_counts": [cx, cy], "trackball_mouse_speed": mouse_speed()}}}, config_path)
     print(f"\nSaved {cx} x {cy} units to {out}.")

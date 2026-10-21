@@ -61,12 +61,12 @@ def ensure_model(path: str | Path, log: Callable[[str], None] = print) -> Path:
     if path.exists():
         if sha256_of(path) == MODEL_SHA256:
             return path
-        old = path.with_name(path.name + ".old")
-        os.replace(path, old)
         log(f"The hand model at {path} isn't the expected version (or is incomplete); "
-            f"moved it to {old.name} and downloading the right one.")
+            f"downloading the right one. The old file is kept as {path.name}.old.")
     else:
         log(f"Downloading the hand-tracking model ({MODEL_SIZE / 1e6:.1f} MB, once only)...")
+    # The old file is only moved aside once the new one is downloaded and verified, so
+    # a failed download really leaves nothing changed.
     download(path)
     log("Hand model downloaded and verified.")
     return path
@@ -94,6 +94,8 @@ def download(path: Path, url: str | None = None) -> None:
                 f"({size} bytes, sha256 {digest[:12]}..., expected {MODEL_SIZE} bytes, "
                 f"{MODEL_SHA256[:12]}...). Nothing was changed. If this keeps happening, "
                 f"Google may have moved the file.\n" + manual_steps(path))
+        if path.exists():  # a wrong or partial model: keep it aside, not deleted
+            os.replace(path, path.with_name(path.name + ".old"))
         os.replace(part, path)
     finally:
         part.unlink(missing_ok=True)

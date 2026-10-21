@@ -148,13 +148,13 @@ zoom:
                           #   diagonal, so libinput never mistakes the pinch for a scroll)
     width_mm: 100         # size of the virtual touchpad
     height_mm: 65
+  invert: false           # true = spread to zoom out (every method)
+  settle_ms: 150          # ignore movement just after both hands start pointing
   # ctrl_scroll / keys only:
   notch_ratio: 1.15       # spreading hands 15% further = one zoom step. Lower = zoom faster
-  invert: false           # true = spread to zoom out
-  settle_ms: 150          # ignore movement just after both hands start pointing
   deadzone: 0.004         # ignore tiny spread changes (log scale) so still hands don't zoom
   ctrl_release_ms: 400    # ctrl_scroll: let go of Ctrl after the hands are still this long
-  filter:
+  filter:                 # One Euro filter on the hand spread (every method)
     min_cutoff: 1.0
     beta: 2.0
     d_cutoff: 1.0

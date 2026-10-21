@@ -278,6 +278,25 @@ class GestureController:
         if self.touchpad is not None:
             self.touchpad.tick()
 
+    def stalled(self, t: float) -> Status:
+        """The camera has sent no frames for a while (call this when a read times out).
+
+        Without frames, update() never runs, so nothing would ever let go: a drag would
+        keep the left button down, a Ctrl+wheel zoom would keep Ctrl held for every
+        key typed, and a touchpad pinch would keep its fingers down. So release
+        everything now, stop any glide, and start fresh when frames come back."""
+        self._events = []
+        self._actions = []
+        self.tick()
+        self._stop_fling()
+        self.pose.reset()
+        self.zoom_debounce.reset()
+        self._fist_start, self._fist_fired = None, False
+        if self.mode != Mode.IDLE or self.pointer.any_down():
+            self._enter(Mode.IDLE)
+            self._act("camera stalled: released")
+        return self._status(Status(paused=self.paused))
+
     def toggle_pause(self) -> None:
         self.paused = not self.paused
         self._stop_fling()
@@ -356,14 +375,18 @@ class GestureController:
             both = zoom is not None and zoom[0] and not dragging
             st.zoom_hands = both
             zooming = self.zoom_debounce.update("zoom" if both else NONE) == "zoom"
-            if zooming and zoom is not None:
+            # A frame where the tracker misses the second hand (zoom is None) is a
+            # glitch like any other: the debouncer decides when the zoom ends, so one
+            # missed frame doesn't lift the fingers (or let go of Ctrl) mid-pinch.
+            if zooming and (zoom is not None or self.mode == Mode.ZOOM):
                 if self.mode != Mode.ZOOM:
                     self._enter(Mode.ZOOM)
                     self._mode_since = t
                     self._act("zoom")
-                st.zoom_spread = zoom[1]
                 self._zoom_status_blocked = ""
-                self._zoom(zoom[1], t)
+                if zoom is not None:
+                    st.zoom_spread = zoom[1]
+                    self._zoom(zoom[1], t)
                 st.zoom_blocked = self._zoom_status_blocked
                 return self._status(st)
             if self.mode == Mode.ZOOM:
@@ -714,6 +737,10 @@ class GestureController:
         # full glide distance), keeping the release continuous with the drag.
         carry = self._carry * tau / d
         v = (self._fling_v0 * (1.0 + k * ease) + carry * ease) * math.exp(-age / tau)
+        if v * self._fling_v0 < 0:
+            # boost well below 1 makes 1 + k * ease negative: the glide has stopped,
+            # it must never turn round and scroll the page back.
+            return 0.0
         return max(-self.max_glide, min(self.max_glide, v))
 
     def _apply_fling(self, t: float) -> None:
