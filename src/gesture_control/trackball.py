@@ -13,8 +13,9 @@ ID_INPUT_TRACKBALL. So the app creates a separate virtual pointer named
 trackball profile is set to flat. Your real mouse and touchpad keep their settings.
 
 With flat acceleration, libinput scales movement by a constant (1 + mouse speed), and
-mutter also scales by the display scale. Rather than guess those, --calibrate-trackball
-measures how many movement units cross the screen.
+mutter counts relative motion in logical pixels (resolution / display scale). So the
+units for one screen width are computed from what GNOME reports (display.py).
+--calibrate-trackball measures them by hand instead, for setups where that's off.
 """
 
 from __future__ import annotations
@@ -33,8 +34,7 @@ RULE = ('ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", '
 SETUP_COMMANDS = f"""\
   echo '{RULE}' | sudo tee {RULE_PATH}
   sudo udevadm control --reload-rules
-  gsettings set org.gnome.desktop.peripherals.trackball accel-profile flat
-  uv run gesture-control --calibrate-trackball"""
+  gsettings set org.gnome.desktop.peripherals.trackball accel-profile flat"""
 
 
 def _gsettings(schema: str, key: str) -> str | None:
@@ -88,17 +88,26 @@ def device_tagged(path: str | None, timeout: float = 1.5) -> bool:
         time.sleep(0.2)
 
 
-def missing_steps(cfg: dict, check_counts: bool = True) -> list[str]:
+def missing_steps(cfg: dict) -> list[str]:
     """Setup steps still needed before the trackball output can be used."""
     missing = []
     if not rule_installed():
         missing.append(f"the udev rule {RULE_PATH} isn't installed")
     if not flat_profile():
         missing.append("GNOME's trackball acceleration isn't set to flat")
-    counts = cfg["cursor"]["relative"]["trackball_counts"]
-    if check_counts and not (counts and min(counts) > 0):
-        missing.append("the trackball output isn't calibrated yet (--calibrate-trackball)")
     return missing
+
+
+def calibrated(cfg: dict) -> bool:
+    counts = cfg["cursor"]["relative"]["trackball_counts"]
+    return bool(counts) and min(counts) > 0
+
+
+def auto_counts(disp) -> tuple[float, float] | None:
+    """Units per screen width / height from GNOME's display info (None if unknown)."""
+    from .display import trackball_counts
+
+    return None if disp is None else trackball_counts(disp, mouse_speed())
 
 
 # -- calibration -----------------------------------------------------------------------
@@ -158,7 +167,9 @@ def _measure(ptr, axis: int) -> int:
     input("Got it. Now a slower pass to fine-tune: press Enter to start, then Enter "
           "again the moment it touches.")
     pin()
-    start = max(first - 120, 0)
+    # Start well before the first answer: the quick pass moves ~480 units/s, so a
+    # 0.3-0.5 s reaction already overshoots by 150-250 units.
+    start = max(first - 350, 0)
     second = _sweep(ptr, axis, sign, start, first + 60, 1, 0.02)
     value = second if second is not None else first
     print(f"Screen {label.lower()}: {value} units.")
@@ -169,7 +180,7 @@ def run_calibration(cfg: dict, dry_run: bool, config_path: str | None) -> None:
     from .config import update_calibration
     from .pointer import VirtualPointer
 
-    missing = missing_steps(cfg, check_counts=False)
+    missing = missing_steps(cfg)
     if missing and not dry_run:
         print("Trackball output setup isn't complete:")
         for m in missing:
@@ -178,9 +189,16 @@ def run_calibration(cfg: dict, dry_run: bool, config_path: str | None) -> None:
         sys.exit(1)
     if not sys.stdin.isatty() and not dry_run:
         sys.exit("Calibration needs an interactive terminal.")
-    print("Trackball calibration: measures how far the cursor moves, so gestures move it "
-          "the same distance as before.\nKeep this terminal focused and don't touch the "
-          "mouse. With several monitors, use your laptop screen only.")
+    from .display import primary_display
+
+    disp = primary_display()
+    auto = auto_counts(disp)
+    print("Trackball calibration (optional: the app normally works these numbers out "
+          "from GNOME's display settings).\nKeep this terminal focused and don't touch "
+          "the mouse. With several monitors, use your laptop screen only.")
+    if auto is not None:
+        print(f"GNOME reports {disp.describe()}, mouse speed {mouse_speed() or 0:g}: "
+              f"expected about {auto[0]:.0f} x {auto[1]:.0f} units.")
     try:
         ptr = VirtualPointer(mode="relative", dry_run=dry_run, name=DEVICE_NAME)
     except PermissionError:
@@ -203,4 +221,7 @@ def run_calibration(cfg: dict, dry_run: bool, config_path: str | None) -> None:
     out = update_calibration({"cursor": {"relative": {
         "trackball_counts": [cx, cy], "trackball_mouse_speed": mouse_speed()}}}, config_path)
     print(f"\nSaved {cx} x {cy} units to {out}.")
-    print("The cursor now follows your real pointer: start the app as usual.")
+    if auto is not None and max(abs(cx / auto[0] - 1), abs(cy / auto[1] - 1)) < 0.02:
+        print("That matches the automatic value, so you don't need this calibration: "
+              "delete the relative: block from calibration.yaml to go back to automatic.")
+    print("The app uses these numbers until you delete them from that file.")

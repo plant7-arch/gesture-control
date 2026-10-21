@@ -38,20 +38,24 @@ to flat. Your real mouse and touchpad keep their own settings. Run these once:
 echo 'ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="gesture-control trackball", ENV{ID_INPUT_TRACKBALL}="1"' | sudo tee /etc/udev/rules.d/99-gesture-control.rules
 sudo udevadm control --reload-rules
 gsettings set org.gnome.desktop.peripherals.trackball accel-profile flat
-uv run gesture-control --calibrate-trackball
 ```
 
-`--calibrate-trackball` works like `--calibrate`: the cursor moves slowly towards the
-right edge, then the top edge; press Enter the moment it touches (twice per edge: a
-quick pass, then a slow one). The result goes to `config/calibration.yaml`.
-
 After that, the app uses the trackball output automatically (`cursor.relative.output:
-auto`); the startup line says `cursor: relative (trackball)`. Until then it uses the
-tablet and prints a one-line tip about this section. Notes:
+auto`); the startup line says e.g. `cursor: relative (trackball, 1920x1080 units, auto)`.
+Until then it uses the tablet and prints a one-line tip about this section. Notes:
 
-- Re-run `--calibrate-trackball` after changing display scaling, resolution or GNOME's
-  mouse speed (Settings > Mouse & Touchpad > Mouse Pointer Speed also applies to
-  trackballs; the app warns at startup if it changed).
+- No calibration needed: at every start the app asks GNOME for the screen's resolution
+  and scale and the mouse speed, and works out how far to move. GNOME counts trackball
+  movement in logical pixels (resolution ÷ scale, e.g. 1536 × 864 for 1920 × 1080 at
+  125%), multiplied by (1 + mouse speed). Changing them is picked up at the next start.
+- With several monitors, the primary one is used.
+- `uv run gesture-control --calibrate-trackball` measures the numbers by hand instead, in
+  case the automatic ones are ever off: the cursor moves towards the right edge, then the
+  top edge; press Enter the moment it touches (twice per edge: a quick pass, then a slow
+  one). It shows the automatic value for comparison and saves to
+  `config/calibration.yaml`, which then takes priority. To go back to automatic, delete
+  the `relative:` block from that file (the app says so at startup if the saved values
+  differ from GNOME's by more than 3%).
 - If you own a real trackball, it also gets flat acceleration.
 - To undo: `sudo rm /etc/udev/rules.d/99-gesture-control.rules`,
   `gsettings reset org.gnome.desktop.peripherals.trackball accel-profile`, and the app
@@ -67,7 +71,7 @@ Useful options:
 | `--dry-run` | Track and recognize gestures, but print actions instead of moving the mouse |
 | `--mode absolute` | Hand position = screen position (the default is relative, touchpad-like) |
 | `--calibrate` | Find the screen edges for absolute mode, then exit |
-| `--calibrate-trackball` | Measure the trackball output (after its [one-time setup](#using-your-mouse-and-gestures-together-optional-one-time-setup)), then exit |
+| `--calibrate-trackball` | Optional: measure the trackball output by hand instead of using GNOME's screen size, then exit |
 | `--zoom-test` | Zoom in, then out, under the mouse pointer (a real touchpad pinch by default; no camera), then exit |
 | `--start-paused` | Start paused; hold a fist ~1 s to begin |
 | `--no-preview` | Run without the camera window (Ctrl+C, or `kill`, to quit) |
@@ -300,7 +304,7 @@ pinch:
 cursor:
   relative:
     gain_slow: 0.03      # finer aiming
-    screen_aspect: 1.78  # 16:9 screen
+    gain_fast: 0.5       # cross the screen with less arm movement
 
 double_click:
   window_ms: 900
@@ -426,9 +430,9 @@ from `speed_slow` to `speed_fast`:
 | `speed_slow` | `0.6` | Hand speed (palm lengths per second) at or below which `gain_slow` applies |
 | `speed_fast` | `5.0` | Hand speed at or above which `gain_fast` applies |
 | `min_speed` | `0.15` | Slower than this counts as holding still: hides tracking jitter. Raise it if the cursor creeps |
-| `screen_aspect` | `1.6` | Screen width ÷ height (1.6 for 16:10, 1.78 for 16:9), so vertical and horizontal movement match |
+| `screen_aspect` | `auto` | Screen width ÷ height, so vertical and horizontal movement match. `auto` reads it from GNOME (1.6 if it can't); or set a number: 1.6 for 16:10, 1.78 for 16:9. The trackball output always uses the screen's real shape |
 | `output` | `auto` | `auto`: the trackball output once its [one-time setup](#using-your-mouse-and-gestures-together-optional-one-time-setup) is done, otherwise the tablet. `trackball`: always (exits with the setup steps if they're missing). `tablet`: the calibrated virtual tablet; the cursor jumps back after you use your real mouse. `mouse`: plain mouse events, with GNOME's mouse acceleration added on top |
-| `trackball_counts` | `[0, 0]` | Written by `--calibrate-trackball`: movement units for one screen width and height. Don't set it by hand |
+| `trackball_counts` | `[0, 0]` | Movement units for one screen width and height. `[0, 0]` = automatic (from GNOME); `--calibrate-trackball` writes measured values |
 | `trackball_mouse_speed` | `null` | Written by `--calibrate-trackball`: GNOME's mouse speed at calibration, to warn when it changes |
 | `mouse_px_per_screen` | `1920` | Only for `output: mouse`: movement units per screen width (the height uses `screen_aspect`) |
 | `filter.min_cutoff` | `1.0` | Smoothing when still. Lower = steadier, but more lag |
@@ -539,6 +543,7 @@ src/gesture_control/
   app.py          main loop and CLI
   calibrate.py    screen-edge calibration (--calibrate)
   trackball.py    trackball output setup checks and --calibrate-trackball
+  display.py      screen size and scale from GNOME (D-Bus)
   touchpad.py     virtual touchpad for the two-hand pinch
   capture.py      threaded camera reader (newest frame only)
   tracker.py      MediaPipe Hand Landmarker wrapper

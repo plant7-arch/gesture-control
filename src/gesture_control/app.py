@@ -184,9 +184,17 @@ def _is_switch(anchor, prev_anchor, prev_other, palm) -> bool:
     return palm is not None and palm > 1e-4 and d_prev / palm > MAX_JUMP_PALMS
 
 
-def _resolve_output(cfg, dry_run: bool):
-    """Settle cursor.relative.output ("auto" -> trackball or tablet). Returns the
-    trackball pointer if that's what will be used (already created and verified)."""
+def _resolve_aspect(cfg, disp) -> None:
+    """cursor.relative.screen_aspect: auto -> the screen's own width / height."""
+    rc = cfg["cursor"]["relative"]
+    if rc["screen_aspect"] == "auto":
+        rc["screen_aspect"] = disp.aspect if disp is not None else 1.6
+
+
+def _resolve_output(cfg, dry_run: bool, disp=None):
+    """Settle cursor.relative.output ("auto" -> trackball or tablet) and, for the
+    trackball, its movement units per screen. Returns the trackball pointer if that's
+    what will be used (already created and verified)."""
     from . import trackball as tb
 
     rc = cfg["cursor"]["relative"]
@@ -196,6 +204,10 @@ def _resolve_output(cfg, dry_run: bool):
             rc["output"] = "tablet"
         return None
     missing = tb.missing_steps(cfg)
+    auto = tb.auto_counts(disp)
+    if not tb.calibrated(cfg) and auto is None:
+        missing.append("couldn't read the screen size and scale from GNOME; run "
+                       "uv run gesture-control --calibrate-trackball once instead")
     ptr = None
     if not missing:
         try:
@@ -219,11 +231,22 @@ def _resolve_output(cfg, dry_run: bool):
               "(or set cursor.relative.output: tablet to hide this tip).")
         return None
     rc["output"] = "trackball"
-    saved, now = rc.get("trackball_mouse_speed"), tb.mouse_speed()
-    if saved is not None and now is not None and abs(float(saved) - now) > 1e-6:
-        print("Note: GNOME's mouse speed changed since the trackball calibration, so "
-              "gestures move the cursor a different distance. Re-run: "
-              "uv run gesture-control --calibrate-trackball")
+    if tb.calibrated(cfg):
+        cx, cy = (float(v) for v in rc["trackball_counts"])
+        rc["_counts_source"] = f"{cx:.0f}x{cy:.0f} units, calibrated"
+        saved, now = rc.get("trackball_mouse_speed"), tb.mouse_speed()
+        if saved is not None and now is not None and abs(float(saved) - now) > 1e-6:
+            print("Note: GNOME's mouse speed changed since the trackball calibration, so "
+                  "gestures move the cursor a different distance. Delete the relative: "
+                  "block from config/calibration.yaml to use the automatic value.")
+        elif auto is not None and max(abs(cx / auto[0] - 1), abs(cy / auto[1] - 1)) > 0.03:
+            print(f"Note: the trackball calibration ({cx:.0f} x {cy:.0f}) differs from what "
+                  f"GNOME reports ({auto[0]:.0f} x {auto[1]:.0f} for {disp.describe()}). "
+                  "Using the calibration; delete the relative: block from "
+                  "config/calibration.yaml to use the automatic value.")
+    else:
+        rc["trackball_counts"] = [auto[0], auto[1]]
+        rc["_counts_source"] = f"{auto[0]:.0f}x{auto[1]:.0f} units, auto"
     return ptr
 
 
@@ -288,6 +311,7 @@ def main(argv=None) -> None:
     # Heavy imports after argument handling so --help and --pointer-test stay fast.
     from .capture import Camera
     from .controller import GestureController
+    from .display import primary_display
     from .features import (
         POINT,
         anchor_point,
@@ -297,7 +321,9 @@ def main(argv=None) -> None:
     )
     from .tracker import HandTracker, feature_points
 
-    pointer = _resolve_output(cfg, args.dry_run)
+    disp = primary_display()
+    _resolve_aspect(cfg, disp)
+    pointer = _resolve_output(cfg, args.dry_run, disp)
     device = pointer_device_mode(cfg)
     if pointer is None:
         pointer = _make_pointer(device, args.dry_run)
@@ -329,7 +355,10 @@ def main(argv=None) -> None:
         camera.start()
         w, h, fps_set = camera.actual
         out_name = (cfg["cursor"]["mode"] if cfg["cursor"]["mode"] == "absolute"
-                    else f"relative ({cfg['cursor']['relative']['output']})")
+                    else f"relative ({cfg['cursor']['relative']['output']}"
+                         + (f", {cfg['cursor']['relative']['_counts_source']}"
+                            if "_counts_source" in cfg["cursor"]["relative"] else "")
+                         + ")")
         print(f"Camera /dev/video{camera.index}: {w}x{h} @ {fps_set:.0f} fps | "
               f"cursor: {out_name} | {'DRY RUN' if args.dry_run else 'live'}")
         if cfg["_loaded"]:

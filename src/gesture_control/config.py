@@ -63,7 +63,7 @@ DEFAULTS: dict[str, Any] = {
             "speed_slow": 0.6,
             "speed_fast": 5.0,
             "min_speed": 0.15,
-            "screen_aspect": 1.6,
+            "screen_aspect": "auto",
             "mouse_px_per_screen": 1920,
             "filter": {"min_cutoff": 1.0, "beta": 4.0, "d_cutoff": 1.0},
         },
@@ -229,7 +229,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     if not (isinstance(tc, (list, tuple)) and len(tc) == 2
             and all(isinstance(v, (int, float)) and v >= 0 for v in tc)):
         raise ValueError("cursor.relative.trackball_counts must be two numbers >= 0 "
-                         "(set by --calibrate-trackball)")
+                         "(0 = automatic; set by --calibrate-trackball)")
     if cfg["cursor"]["anchor"] not in ("knuckles", "index_mcp", "index_tip", "palm_center"):
         raise ValueError("cursor.anchor must be knuckles, index_mcp, index_tip or palm_center")
     scale = cfg["cursor"]["abs_scale"]
@@ -276,10 +276,13 @@ def _check_ranges(cfg: dict[str, Any]) -> None:
 
     positive("pinch.start", "pinch.release", "pose.extend_ratio", "pose.curl_ratio",
              "cursor.relative.gain_slow", "cursor.relative.gain_fast",
-             "cursor.relative.screen_aspect", "scroll.notches_per_height",
+             "scroll.notches_per_height",
              "scroll.fling.time_constant_s", "scroll.fling.boost",
              "scroll.fling.max_notches_per_s", "pause.fist_hold_s",
              "zoom.touchpad.gain")
+    sa = cfg["cursor"]["relative"]["screen_aspect"]
+    if sa != "auto":
+        positive("cursor.relative.screen_aspect")
     if num("pinch.release") <= num("pinch.start"):
         raise ValueError(
             f"pinch.release ({num('pinch.release')}) must be larger than pinch.start "

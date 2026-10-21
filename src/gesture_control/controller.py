@@ -183,11 +183,15 @@ class GestureController:
         self.rel_filter = OneEuroFilter(**rc["filter"])
         # app.py resolves "auto" before this; unresolved (tests, tools) means tablet.
         self.rel_output = "tablet" if rc["output"] == "auto" else rc["output"]
-        self.screen_aspect = float(rc["screen_aspect"])
+        # app.py resolves "auto" from the display; unresolved (tests) means 16:10.
+        sa = rc["screen_aspect"]
+        self.screen_aspect = 1.6 if sa == "auto" else float(sa)
         self.mouse_px = float(rc["mouse_px_per_screen"])
         # Movement units for one screen width / height, for the relative outputs.
         if self.rel_output == "trackball":
             self.rel_counts = (float(rc["trackball_counts"][0]), float(rc["trackball_counts"][1]))
+            # Equal hand movement = equal pixels on both axes: use the screen's own shape.
+            self.screen_aspect = self.rel_counts[0] / max(self.rel_counts[1], 1e-6)
         else:  # mouse: pixels; the screen height is the width / aspect ratio
             self.rel_counts = (self.mouse_px, self.mouse_px / max(self.screen_aspect, 1e-6))
         # Relative outputs can't know where the real pointer is, so they keep a virtual
