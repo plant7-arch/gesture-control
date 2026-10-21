@@ -3,6 +3,5 @@ cursor:
     screen_aspect: 1.78
 
 scroll:
-  notches_per_height: 40
   fling:
-    time_constant_s: 0.8
+    boost: 3.0

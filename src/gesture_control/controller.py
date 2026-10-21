@@ -180,13 +180,16 @@ class GestureController:
         self.fling_min_speed = float(fl["min_speed"])
         self.fling_tau = float(fl["time_constant_s"])
         self.fling_boost = float(fl["boost"])  # glide-only speed multiplier
-        self.lift_frames = max(1, int(fl["lift_frames"]))
+        self.boost_ramp = max(float(fl["boost_ramp_s"]), 1e-3)
+        self._fling_v0 = 0.0         # release speed (hi-res units/s, signed), before boost
+        self._fling_age = 0.0        # seconds since release
+        self._last_t: float | None = None
         self._fling_v = 0.0          # hi-res wheel units per second (signed)
         self._fling_t = 0.0
         self._fling_rem = 0.0
         self._scroll_hist: deque[tuple[float, float]] = deque(maxlen=15)
-        self._scroll_lifted = False  # finger "lifted": ignore the hand until re-entry
-        self._not_two = 0
+        self._scroll_lifted = False  # finger lifted: ignore hand movement until it touches again
+        self._lift_glided = False
         self.scroll_deadzone = float(sc["deadzone"])
         self.scroll_settle_s = float(sc["settle_ms"]) / 1000.0
         self._mode_since = 0.0
@@ -221,6 +224,7 @@ class GestureController:
         distance from the camera."""
         st = Status(paused=self.paused)
         self._events = []
+        prev_t, self._last_t = self._last_t, t
         # Catch a glide on the very first frame of the peace sign, like touching the glass.
         if self._fling_v and feats is not None and feats.pose == TWO and not self.paused:
             self._stop_fling()
@@ -228,7 +232,7 @@ class GestureController:
 
         if feats is None or anchor is None:
             if self.mode == Mode.SCROLL and not self._scroll_lifted:
-                self._lift(t)  # hand left the view mid-swipe: same as lifting the finger
+                self._lift(t, prev_t)  # hand left the view mid-swipe: same as lifting the finger
             self._lost += 1
             if self._lost >= self.lost_limit and (self.mode != Mode.IDLE or self.pointer.any_down()):
                 self._enter(Mode.IDLE)
@@ -313,13 +317,24 @@ class GestureController:
             hold = feats.pose not in (POINT, NONE) and not self.pointer.is_down("left")
             self._move_cursor(anchor, t, st, hold=hold, palm=palm)
         elif self.mode == Mode.SCROLL:
-            # Leaving the scroll pose for lift_frames frames = lifting the finger off the
-            # glass: a fast swipe keeps gliding (fling). A single odd frame is ignored.
-            self._not_two = 0 if feats.pose == TWO else self._not_two + 1
+            # Leaving the scroll pose = lifting the finger off the glass. The glide starts
+            # on the very first frame out of the pose, at the drag speed, so drag and glide
+            # are one continuous motion. The peace sign coming back = a new touch: it
+            # catches the glide and the drag picks up from where the hand is. (A single
+            # misread frame therefore shows up as one frame of glide at drag speed.)
             if self._scroll_lifted:
-                pass
-            elif self._not_two >= self.lift_frames:
-                self._lift(t)
+                if feats.pose == TWO:
+                    glided = self._lift_glided
+                    self._stop_fling()
+                    self._scroll_lifted = False
+                    self._scroll_hist.clear()
+                    if glided:
+                        self._scroll_prev = None  # the glide moved the page: new baseline
+                    # else keep the old baseline, so movement during a misread frame
+                    # is caught up now instead of lost
+                    self._scroll(anchor, t)
+            elif feats.pose != TWO and not (t - self._mode_since < self.scroll_settle_s):
+                self._lift(t, prev_t)
             else:
                 # Only scroll on frames that really show the scroll pose.
                 settling = t - self._mode_since < self.scroll_settle_s or feats.pose != TWO
@@ -334,7 +349,6 @@ class GestureController:
         if mode == Mode.SCROLL:
             self._stop_fling()  # touching the glass again stops a fling
         self._scroll_lifted = False
-        self._not_two = 0
         self._scroll_hist.clear()
         self.mode = mode
         self.cursor_filter.reset()
@@ -489,10 +503,12 @@ class GestureController:
             self.pointer.scroll(units)
             self._act("scroll up" if units > 0 else "scroll down", quiet=True)
 
-    def _lift(self, t: float) -> None:
+    def _lift(self, t: float, prev_t: float | None = None) -> None:
         """The finger left the glass. If the hand was still moving fast, keep scrolling
-        with that speed and let it decay (momentum), like a phone."""
+        from exactly that speed and let it decay (momentum), like a phone. The glide's
+        first step is sent in this same frame, so there is no pause between drag and glide."""
         self._scroll_lifted = True
+        self._lift_glided = False
         hist = [(ht, hy) for ht, hy in self._scroll_hist if ht >= t - 0.25]
         self._scroll_hist.clear()
         if not self.fling_enabled or len(hist) < 2:
@@ -506,12 +522,28 @@ class GestureController:
         v = (y0 - y_end) / (t_end - t0)  # frame heights per second, hand up = positive
         if abs(v) < self.fling_min_speed:
             return
-        # boost multiplies only the glide: dragging keeps its 1:1 feel, and the glide
-        # still decays at the same rate, so it goes further without lasting much longer.
-        self._fling_v = v * self.scroll_units * self.scroll_sign * self.fling_boost
-        self._fling_t = t
+        self._fling_v0 = v * self.scroll_units * self.scroll_sign
+        self._fling_v = self._fling_v0
+        self._fling_age = 0.0
         self._fling_rem = 0.0
+        # Continue from the previous frame's time, so this frame already moves the page.
+        self._fling_t = prev_t if prev_t is not None and prev_t < t else t - 1 / 30
+        self._lift_glided = True
         self._act("fling")
+        self._apply_fling(t)
+
+    def _glide_speed(self, age: float) -> float:
+        """Glide speed at a given age. Starts at exactly the release speed and eases into
+        the boost along an S-curve (flat at the start, so the first frames match the drag),
+        while everything decays with time_constant_s:
+            v(age) = v0 * (1 + k * (1 - e^(-age/ramp))^2) * e^(-age/tau)
+        k is chosen so the total glide distance is exactly boost x the unboosted glide."""
+        tau, rmp = self.fling_tau, self.boost_ramp
+        # integral of (1 - e^(-a/r))^2 * e^(-a/tau) over a = 0..inf
+        d = tau - 2 * rmp * tau / (rmp + tau) + rmp * tau / (2 * tau + rmp)
+        k = (self.fling_boost - 1.0) * tau / d
+        ease = (1.0 - math.exp(-age / rmp)) ** 2
+        return self._fling_v0 * (1.0 + k * ease) * math.exp(-age / tau)
 
     def _apply_fling(self, t: float) -> None:
         if self._fling_v == 0.0:
@@ -520,17 +552,21 @@ class GestureController:
         if dt <= 0:
             return
         self._fling_t = t
-        amount = self._fling_v * dt + self._fling_rem
+        # Midpoint speed over this frame: accurate for both the ramp and the decay.
+        v_mid = self._glide_speed(self._fling_age + dt / 2)
+        self._fling_age += dt
+        amount = v_mid * dt + self._fling_rem
         units = int(amount)
         self._fling_rem = amount - units
         if units:
             self.pointer.scroll(units)
-        self._fling_v *= math.exp(-dt / self.fling_tau)
+        self._fling_v = self._glide_speed(self._fling_age)
         if abs(self._fling_v) < HI_RES_PER_NOTCH / 2:  # under half a notch per second
             self._stop_fling()
 
     def _stop_fling(self) -> None:
         self._fling_v = 0.0
+        self._fling_v0 = 0.0
         self._fling_rem = 0.0
 
     def _act(self, text: str, quiet: bool = False) -> None:

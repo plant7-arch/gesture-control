@@ -104,8 +104,9 @@ scroll:
     min_speed: 0.8        # hand speed at lift (frame heights per second) needed to fling
     boost: 2.0            # glide speed = swipe speed x boost. Higher = flings go further;
                           #   dragging is unaffected. 1.0 = glide at exactly swipe speed
+    boost_ramp_s: 0.15    # the glide starts at your drag speed and eases up to the boosted
+                          #   speed over about this long, so drag and glide feel continuous
     time_constant_s: 0.45 # how long the glide lasts: higher = longer, further
-    lift_frames: 2        # frames out of the pose that count as lifting the finger
   filter:
     min_cutoff: 1.0
     beta: 5.0

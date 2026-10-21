@@ -75,8 +75,8 @@ DEFAULTS: dict[str, Any] = {
             "enabled": True,
             "min_speed": 0.8,
             "boost": 2.0,
+            "boost_ramp_s": 0.15,
             "time_constant_s": 0.45,
-            "lift_frames": 2,
         },
         "filter": {"min_cutoff": 1.0, "beta": 5.0, "d_cutoff": 1.0},
     },
@@ -158,6 +158,11 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     for f in files:
         data = _read_yaml(f)
         sc = data.get("scroll")
+        fl = sc.get("fling") if isinstance(sc, dict) else None
+        if isinstance(fl, dict) and "lift_frames" in fl:  # no longer used
+            fl.pop("lift_frames")
+            warnings.append(f"{f.name}: scroll.fling.lift_frames is no longer needed "
+                            "(the glide now starts on the first frame) - ignored")
         if isinstance(sc, dict) and "invert" in sc:  # replaced by scroll.direction
             inverted = bool(sc.pop("invert"))
             sc.setdefault("direction", "natural" if inverted else "traditional")
