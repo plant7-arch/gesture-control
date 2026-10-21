@@ -75,7 +75,9 @@ def device_tagged(path: str | None, timeout: float = 1.5) -> bool:
     end = time.monotonic() + timeout
     while True:
         try:
-            out = subprocess.run(["udevadm", "info", "--query=property", f"--name={path}"],
+            # Query by sysfs path: works without read access to /dev/input/eventN.
+            sys_path = f"/sys/class/input/{Path(path).name}"
+            out = subprocess.run(["udevadm", "info", "--query=property", f"--path={sys_path}"],
                                  capture_output=True, text=True, timeout=2, check=False)
             if "ID_INPUT_TRACKBALL=1" in out.stdout:
                 return True
@@ -184,9 +186,13 @@ def run_calibration(cfg: dict, dry_run: bool, config_path: str | None) -> None:
     except PermissionError:
         sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
     try:
+        if not dry_run and ptr.device_path is None:
+            sys.exit("Couldn't find the virtual trackball's /dev/input/event node. "
+                     "Please report this.")
         if not dry_run and not device_tagged(ptr.device_path):
-            sys.exit("The virtual trackball wasn't tagged by udev. Check the rule file "
-                     f"{RULE_PATH} and run: sudo udevadm control --reload-rules")
+            sys.exit(f"The virtual trackball ({ptr.device_path}) wasn't tagged by udev. "
+                     f"Check the rule file {RULE_PATH} and run: "
+                     "sudo udevadm control --reload-rules")
         cx = _measure(ptr, 0)
         cy = _measure(ptr, 1)
     except (KeyboardInterrupt, EOFError):

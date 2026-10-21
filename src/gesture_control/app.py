@@ -202,10 +202,11 @@ def _resolve_output(cfg, dry_run: bool):
             ptr = VirtualPointer(mode="relative", dry_run=dry_run, name=tb.DEVICE_NAME)
         except PermissionError:
             sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
-        if not dry_run and not tb.device_tagged(ptr.device_path):
+        ptr_path = None if dry_run else ptr.device_path
+        if not dry_run and not tb.device_tagged(ptr_path):
             ptr.close()
             ptr = None
-            missing = [("udev didn't tag the virtual trackball "
+            missing = [(f"udev didn't tag the virtual trackball ({ptr_path}) "
                         "(run: sudo udevadm control --reload-rules)")]
     if missing:
         if want == "trackball":

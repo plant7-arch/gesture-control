@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import glob
+import os
+import re
 import time
 
 ABS_MAX = 32767
@@ -22,6 +25,7 @@ class VirtualPointer:
     def __init__(self, mode: str = "absolute", dry_run: bool = False,
                  name: str = "gesture-control pointer"):
         self.mode = mode
+        self.name = name
         self.dry_run = dry_run
         self._down: set[str] = set()
         self._wheel_acc = 0
@@ -49,9 +53,18 @@ class VirtualPointer:
 
     @property
     def device_path(self) -> str | None:
-        """The /dev/input/eventN node of the virtual device (None in dry-run)."""
+        """The /dev/input/eventN node of the virtual device (None in dry-run).
+
+        python-evdev only fills in UInput.device when it can open the event node, and
+        normal users can't (only root and the input group can read /dev/input/event*).
+        So find the node through sysfs, which needs no permissions."""
+        if self._ui is None:
+            return None
         dev = getattr(self._ui, "device", None)
-        return getattr(dev, "path", None)
+        if getattr(dev, "path", None):
+            return dev.path
+        node = _event_node_from_fd(self._ui.fd) or _event_node_by_name(self.name)
+        return f"/dev/input/{node}" if node else None
 
     # -- motion -------------------------------------------------------------
     def move_abs(self, nx: float, ny: float) -> None:
@@ -145,6 +158,35 @@ class VirtualPointer:
         if self._ui is not None:
             self._ui.close()
             self._ui = None
+
+
+def _event_node_from_fd(fd: int) -> str | None:
+    """eventN of a uinput device, from its sysfs entry (UI_GET_SYSNAME)."""
+    try:
+        from evdev import _uinput
+
+        sysname = _uinput.get_sysname(fd)
+        for entry in os.listdir(f"/sys/devices/virtual/input/{sysname}"):
+            if re.fullmatch(r"event[0-9]+", entry):
+                return entry
+    except (ImportError, AttributeError, OSError):
+        pass
+    return None
+
+
+def _event_node_by_name(name: str) -> str | None:
+    """Newest eventN whose device has this name (sysfs, no permissions needed)."""
+    best = None
+    for path in glob.glob("/sys/class/input/event*/device/name"):
+        try:
+            with open(path) as f:
+                if f.read().strip() != name:
+                    continue
+        except OSError:
+            continue
+        num = int(re.search(r"event([0-9]+)", path).group(1))
+        best = num if best is None else max(best, num)
+    return None if best is None else f"event{best}"
 
 
 class VirtualKeys:
