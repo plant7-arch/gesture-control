@@ -13,6 +13,22 @@ HI_RES_PER_NOTCH = 120
 BUTTONS = ("left", "right", "middle")
 
 
+def make_uinput(*args, **kwargs):
+    """evdev.UInput without its device lookup.
+
+    After creating a device, python-evdev tries to open /dev/input/eventN for reading
+    and retries for 2 seconds when that's not allowed, which it isn't for normal users
+    (only root and the input group). The app never reads its own devices, and finds the
+    event node through sysfs when it needs it (VirtualPointer.device_path)."""
+    from evdev import UInput
+
+    class _UInput(UInput):
+        def _find_device(self, *args):  # signature differs between evdev versions
+            return None
+
+    return _UInput(*args, **kwargs)
+
+
 class VirtualPointer:
     """A virtual pointer device.
 
@@ -34,7 +50,7 @@ class VirtualPointer:
         if dry_run:
             return
 
-        from evdev import AbsInfo, UInput
+        from evdev import AbsInfo
         from evdev import ecodes as e
 
         self._e = e
@@ -48,7 +64,7 @@ class VirtualPointer:
         else:
             rel = [e.REL_X, e.REL_Y] + rel
         caps[e.EV_REL] = rel
-        self._ui = UInput(caps, name=name, vendor=0x1209, product=0x6763)
+        self._ui = make_uinput(caps, name=name, vendor=0x1209, product=0x6763)
         # Let the compositor pick up the new device before the first event. The app
         # passes 0: its first event comes after the camera and tracker are up anyway.
         time.sleep(settle)
@@ -205,12 +221,11 @@ class VirtualKeys:
         self._ui = None
         if dry_run:
             return
-        from evdev import UInput
         from evdev import ecodes as e
 
         self._e = e
         self._code = {"ctrl": e.KEY_LEFTCTRL, "equal": e.KEY_EQUAL, "minus": e.KEY_MINUS}
-        self._ui = UInput({e.EV_KEY: list(self._code.values())}, name=name,
+        self._ui = make_uinput({e.EV_KEY: list(self._code.values())}, name=name,
                           vendor=0x1209, product=0x6764)
         time.sleep(settle)
 

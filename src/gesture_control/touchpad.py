@@ -51,8 +51,10 @@ class VirtualTouchpad:
         self.events: list[tuple[str, float]] = []  # dry-run record: ("down"/"move"/"up", sep)
         if dry_run:
             return
-        from evdev import AbsInfo, UInput
+        from evdev import AbsInfo
         from evdev import ecodes as e
+
+        from .pointer import make_uinput
 
         self._e = e
         xmax, ymax = int(self.width_mm * self.res), int(self.height_mm * self.res)
@@ -70,9 +72,9 @@ class VirtualTouchpad:
         }
         # USB bus: an "external" touchpad, so laptop disable-while-typing doesn't pair
         # it with the built-in keyboard.
-        self._ui = UInput(caps, name=name, vendor=0x1209, product=0x6765,
-                          bustype=e.BUS_USB,
-                          input_props=[e.INPUT_PROP_POINTER, e.INPUT_PROP_BUTTONPAD])
+        self._ui = make_uinput(caps, name=name, vendor=0x1209, product=0x6765,
+                               bustype=e.BUS_USB,
+                               input_props=[e.INPUT_PROP_POINTER, e.INPUT_PROP_BUTTONPAD])
         time.sleep(settle)  # let udev and the compositor pick up the new device
 
     # -- geometry -------------------------------------------------------------
