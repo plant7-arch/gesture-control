@@ -7,8 +7,9 @@ Modes
   ZOOM   - two hands, both pointing: spreading them apart zooms in, bringing them
            together zooms out. Default: a true two-finger pinch on a virtual touchpad;
            optionally Ctrl+wheel or Ctrl+= / Ctrl+- taps
-  SCROLL - "two" pose: vertical hand movement scrolls, phone-style by default: the
-           content follows the hand, and leaving the pose mid-swipe flings it
+  SCROLL - "two" pose: hand movement scrolls, up/down and left/right, phone-style by
+           default: the content follows the hand, and leaving the pose mid-swipe
+           flings it. Each swipe sticks to one axis unless scroll.axis_lock is off
 
 Rules that keep it from misfiring
   * poses must be stable for `pose.debounce_frames` frames before they count
@@ -38,6 +39,18 @@ from .pointer import HI_RES_PER_NOTCH, VirtualKeys, VirtualPointer
 # on it would make the next fling overshoot.
 MIN_CATCH_AGE_S = 0.1
 
+# With scroll.axis_lock, a swipe's axis is decided once the hand has moved this far
+# (frame heights, about 3 px at 480 px) from where the touch began. Until then nothing
+# scrolls; the movement isn't lost, it's sent along the chosen axis right after.
+AXIS_LOCK_DIST = 0.006
+
+Vec = tuple[float, float]  # (horizontal, vertical); + = hand right / hand up
+ZERO: Vec = (0.0, 0.0)
+
+
+def _norm(v: Vec) -> float:
+    return math.hypot(v[0], v[1])
+
 class Mode(str, Enum):
     IDLE = "idle"
     MOVE = "move"
@@ -66,6 +79,7 @@ class Status:
     zoom_blocked: str = ""            # why zoom can't work right now (full message)
     zoom_blocked_state: str = ""      # the touchpad setting behind it ("disabled", ...)
     zoom_blocked_new: bool = False    # zoom was just found blocked: print the message once
+    scroll_axis: str = ""             # scrolling: "vertical", "horizontal", "both" or ""
     last_action: str = ""
     # Actions this frame. events: the ones worth printing (-v), once per gesture.
     # actions: every action, including the frequent "quiet" ones (each scroll or zoom
@@ -234,9 +248,14 @@ class GestureController:
         self._click_pos: tuple[float, float] | None = None  # cursor at last press
         self._last_was_double = False
 
+        # Hi-res wheel units per frame height of hand movement. Both axes are measured in
+        # frame heights, so the same hand distance scrolls the same amount either way.
         self.scroll_units = float(sc["notches_per_height"]) * HI_RES_PER_NOTCH
-        # natural (phone): hand up moves the content up = wheel down.
+        # natural (phone): hand up moves the content up = wheel down; hand right moves
+        # the content right = wheel left. traditional: the other way round.
         self.scroll_sign = -1.0 if sc["direction"] == "natural" else 1.0
+        self.scroll_horizontal = bool(sc["horizontal"])
+        self.scroll_axis_lock = bool(sc["axis_lock"])
         fl = sc["fling"]
         self.fling_enabled = bool(fl["enabled"])
         self.fling_min_speed = float(fl["min_speed"])
@@ -249,17 +268,20 @@ class GestureController:
         self.stack_factor = float(stk["factor"])
         self.stack_settle_s = float(stk["settle_ms"]) / 1000.0
         self.max_glide = float(fl["max_notches_per_s"]) * HI_RES_PER_NOTCH
-        self._carry = 0.0            # caught glide speed carried into the next fling
-        self._caught_v = 0.0         # glide speed when it was last caught by a touch
+        # Scroll speeds are (horizontal, vertical) vectors in hi-res wheel units per
+        # second, signed as sent: + = wheel right / wheel up.
+        self._carry: Vec = ZERO      # caught glide speed carried into the next fling
+        self._caught_v: Vec = ZERO   # glide speed when it was last caught by a touch
         self._caught_t = -1e9
         self._settle_s = 0.0         # settle time for the current scroll touch
-        self._fling_v0 = 0.0         # release speed (hi-res units/s, signed), before boost
+        self._fling_v0: Vec = ZERO   # release speed, before boost
         self._fling_age = 0.0        # seconds since release
         self._last_t: float | None = None
-        self._fling_v = 0.0          # hi-res wheel units per second (signed)
+        self._fling_v: Vec = ZERO    # current glide speed
         self._fling_t = 0.0
-        self._fling_rem = 0.0
-        self._scroll_hist: deque[tuple[float, float]] = deque(maxlen=15)
+        self._fling_rem: Vec = ZERO
+        self._scroll_hist: deque[tuple[float, float, float]] = deque(maxlen=15)  # t, x, y
+        self._scroll_axis: str | None = None  # "x", "y", "both"; None = not decided yet
         self._scroll_lifted = False  # finger lifted: ignore hand movement until it touches again
         self._lift_glided = False
         self.scroll_deadzone = float(sc["deadzone"])
@@ -278,11 +300,12 @@ class GestureController:
         self._last_sent: tuple[float, float] | None = None
         self._prev_mapped = None
         self._rel_rem = [0.0, 0.0]
-        self._scroll_prev: float | None = None
-        self._scroll_rem = 0.0       # fraction of a hi-res unit not sent yet
+        self._scroll_prev: Vec | None = None  # baseline point (frame heights)
+        self._scroll_rem: Vec = ZERO  # fractions of a hi-res unit not sent yet
         self._last_action = ""
         self._events: list[str] = []
         self._actions: list[str] = []
+        self._new_touch()  # sets the scroll axis from scroll.horizontal / axis_lock
 
     # -- public ---------------------------------------------------------------
     def set_frame_size(self, width: int, height: int) -> None:
@@ -346,9 +369,9 @@ class GestureController:
         # Its speed is remembered: a quick swipe the same way adds it to the next fling.
         # A glide only frames old (a misread frame mid-drag) still stops, but isn't
         # remembered, so it can't stack.
-        if self._fling_v and feats is not None and feats.pose == TWO and not self.paused:
+        if self.gliding and feats is not None and feats.pose == TWO and not self.paused:
             real = self._fling_age >= MIN_CATCH_AGE_S
-            self._caught_v, self._caught_t = (self._fling_v if real else 0.0), t
+            self._caught_v, self._caught_t = (self._fling_v if real else ZERO), t
             self._stop_fling()
         self._apply_fling(t)
 
@@ -489,7 +512,7 @@ class GestureController:
                     self._scroll_lifted = False
                     self._scroll_hist.clear()
                     if glided:
-                        self._scroll_prev = None  # the glide moved the page: new baseline
+                        self._new_touch()  # the glide moved the page: new baseline
                     # else keep the old baseline, so movement during a misread frame
                     # is caught up now instead of lost
                     self._scroll(anchor, t)
@@ -533,9 +556,24 @@ class GestureController:
         self._prev_mapped = None
         self._last_sent = None
         self._rel_rem = [0.0, 0.0]
-        self._scroll_prev = None
+        self._new_touch()
         self.left.reset()
         self.right.reset()
+
+    def _new_touch(self) -> None:
+        """Start a scroll touch afresh: new baseline, and the axis decided again."""
+        self._scroll_prev = None
+        self._scroll_rem = ZERO
+        if not self.scroll_horizontal:
+            self._scroll_axis = "y"
+        elif not self.scroll_axis_lock:
+            self._scroll_axis = "both"
+        else:
+            self._scroll_axis = None
+
+    @property
+    def gliding(self) -> bool:
+        return self._fling_v != ZERO
 
     def _rebase(self) -> None:
         """Forget motion history, as if the hand had just appeared, without changing
@@ -546,7 +584,7 @@ class GestureController:
         self._prev_mapped = None
         self._last_sent = None
         self._rel_rem = [0.0, 0.0]
-        self._scroll_prev = None
+        self._new_touch()
         self._scroll_hist.clear()
         if not self.pointer.is_down("left"):
             self.left.reset()
@@ -689,28 +727,58 @@ class GestureController:
         st.cursor = (cx, cy)
         self.pointer.move_abs(cx * self.abs_scale[0], cy * self.abs_scale[1])
 
+    def _scroll_point(self, anchor: tuple[float, float]) -> Vec:
+        """The anchor in frame heights on both axes (x is in frame widths)."""
+        return anchor[0] / max(self.frame_aspect, 1e-6), anchor[1]
+
+    def _mask(self, v: Vec, axis: str | None) -> Vec:
+        """Keep only the components the touch scrolls along."""
+        if axis == "x":
+            return v[0], 0.0
+        if axis == "y":
+            return 0.0, v[1]
+        return v
+
+    def _send_scroll(self, units: Vec) -> None:
+        ux, uy = int(units[0]), int(units[1])
+        if uy:
+            self.pointer.scroll(uy)
+            self._act("scroll up" if uy > 0 else "scroll down", quiet=True)
+        if ux:
+            self.pointer.scroll_h(ux)
+            self._act("scroll right" if ux > 0 else "scroll left", quiet=True)
+
     def _scroll(self, anchor: tuple[float, float], t: float, settling: bool = False) -> None:
-        y = float(self.scroll_filter([anchor[1]], t)[0])
+        fx, fy = (float(v) for v in self.scroll_filter(self._scroll_point(anchor), t))
         if not settling:
-            self._scroll_hist.append((t, y))
+            self._scroll_hist.append((t, fx, fy))
         if self._scroll_prev is None or settling:
             # Just switched pose: the hand is still moving into position, so only
             # track the baseline for a moment instead of scrolling.
-            self._scroll_prev = y
-            self._scroll_rem = 0.0
+            self._scroll_prev = (fx, fy)
+            self._scroll_rem = ZERO
             return
-        dy = self._scroll_prev - y  # hand moving up -> positive
-        if abs(dy) < self.scroll_deadzone:
+        px, py = self._scroll_prev
+        d = (fx - px, py - fy)  # hand moving right / up -> positive
+        if self._scroll_axis is None:
+            # Axis lock: decide which way this swipe scrolls once the hand has clearly
+            # moved; the baseline stays put, so that first bit is sent right after.
+            if _norm(d) < AXIS_LOCK_DIST:
+                return
+            self._scroll_axis = "x" if abs(d[0]) > abs(d[1]) else "y"
+            self._act("scroll sideways" if self._scroll_axis == "x" else "scroll up/down",
+                      quiet=True)
+        d = self._mask(d, self._scroll_axis)
+        if _norm(d) < self.scroll_deadzone:
             return
-        self._scroll_prev = y
+        self._scroll_prev = (fx, fy)
         # Carry the fraction of a unit to the next step instead of rounding it away,
         # so the page moves exactly as far as the hand did, however slowly.
-        amount = dy * self.scroll_units * self.scroll_sign + self._scroll_rem
-        units = int(amount)
-        self._scroll_rem = amount - units
-        if units:
-            self.pointer.scroll(units)
-            self._act("scroll up" if units > 0 else "scroll down", quiet=True)
+        k = self.scroll_units * self.scroll_sign
+        amount = (d[0] * k + self._scroll_rem[0], d[1] * k + self._scroll_rem[1])
+        units = (float(int(amount[0])), float(int(amount[1])))
+        self._scroll_rem = (amount[0] - units[0], amount[1] - units[1])
+        self._send_scroll(units)
 
     def _lift(self, t: float, prev_t: float | None = None) -> None:
         """The finger left the glass. If the hand was still moving fast, keep scrolling
@@ -718,66 +786,80 @@ class GestureController:
         first step is sent in this same frame, so there is no pause between drag and glide."""
         self._scroll_lifted = True
         self._lift_glided = False
-        hist = [(ht, hy) for ht, hy in self._scroll_hist if ht >= t - 0.25]
+        hist = [h for h in self._scroll_hist if h[0] >= t - 0.25]
         self._scroll_hist.clear()
         if not self.fling_enabled or len(hist) < 2:
             return
-        t_end, y_end = hist[-1]
-        t0, y0 = next(((ht, hy) for ht, hy in hist if ht >= t_end - 0.12), hist[0])
+        t_end, x_end, y_end = hist[-1]
+        t0, x0, y0 = next((h for h in hist if h[0] >= t_end - 0.12), hist[0])
         if t_end - t0 < 0.03:
-            t0, y0 = hist[0]
+            t0, x0, y0 = hist[0]
         if t_end <= t0:
             return
-        v = (y0 - y_end) / (t_end - t0)  # frame heights per second, hand up = positive
+        # Hand speed in frame heights per second: right / up = positive.
+        v = ((x_end - x0) / (t_end - t0), (y0 - y_end) / (t_end - t0))
+        axis = self._scroll_axis
+        if axis is None:  # a flick too quick to have locked yet: its own direction decides
+            axis = "x" if abs(v[0]) > abs(v[1]) else "y"
+        v = self._mask(v, axis)
         stack_ok = self._stack_ready(t)
-        caught, self._caught_v = self._caught_v, 0.0  # a catch is used at most once
-        if abs(v) < self.fling_min_speed:
+        caught, self._caught_v = self._caught_v, ZERO  # a catch is used at most once
+        if _norm(v) < self.fling_min_speed:
             return
-        self._fling_v0 = v * self.scroll_units * self.scroll_sign
+        k = self.scroll_units * self.scroll_sign
+        self._fling_v0 = (v[0] * k, v[1] * k)
         # Stacking: a quick swipe the same way as the glide it just caught adds that
         # glide's speed, so repeated flicks keep accelerating (up to max_notches_per_s).
-        self._carry = 0.0
-        if stack_ok and caught * self._fling_v0 > 0:
-            self._carry = caught * self.stack_factor
+        self._carry = ZERO
+        if stack_ok and caught[0] * self._fling_v0[0] + caught[1] * self._fling_v0[1] > 0:
+            self._carry = self._mask((caught[0] * self.stack_factor,
+                                      caught[1] * self.stack_factor), axis)
             self._act("fling (stacked)")
         self._fling_v = self._fling_v0
         self._fling_age = 0.0
-        self._fling_rem = 0.0
+        self._fling_rem = ZERO
         # Continue from the previous frame's time, so this frame already moves the page.
         self._fling_t = prev_t if prev_t is not None and prev_t < t else t - 1 / 30
         self._lift_glided = True
-        if not self._carry:
+        if self._carry == ZERO:
             self._act("fling")
         self._apply_fling(t)
 
     def _stack_ready(self, t: float) -> bool:
         """A glide was caught recently enough for the next fling to stack on it."""
-        return (self.stack_enabled and self._caught_v != 0.0
+        return (self.stack_enabled and self._caught_v != ZERO
                 and t - self._caught_t <= self.stack_window)
 
-    def _glide_speed(self, age: float) -> float:
+    def _glide_speed(self, age: float) -> Vec:
         """Glide speed at a given age. Starts at exactly the release speed and eases into
         the boost along an S-curve (flat at the start, so the first frames match the drag),
-        while everything decays with time_constant_s:
+        while everything decays with time_constant_s, on each axis:
             v(age) = v0 * (1 + k * (1 - e^(-age/ramp))^2) * e^(-age/tau)
-        k is chosen so the total glide distance is exactly boost x the unboosted glide."""
+        k is chosen so the total glide distance is exactly boost x the unboosted glide.
+        The speed is capped at max_notches_per_s, keeping its direction."""
         tau, rmp = self.fling_tau, self.boost_ramp
         # integral of (1 - e^(-a/r))^2 * e^(-a/tau) over a = 0..inf
         d = tau - 2 * rmp * tau / (rmp + tau) + rmp * tau / (2 * tau + rmp)
         k = (self.fling_boost - 1.0) * tau / d
         ease = (1.0 - math.exp(-age / rmp)) ** 2
-        # A stacked glide's carried speed eases in the same way (scaled so it adds its
-        # full glide distance), keeping the release continuous with the drag.
-        carry = self._carry * tau / d
-        v = (self._fling_v0 * (1.0 + k * ease) + carry * ease) * math.exp(-age / tau)
-        if v * self._fling_v0 < 0:
-            # boost well below 1 makes 1 + k * ease negative: the glide has stopped,
-            # it must never turn round and scroll the page back.
-            return 0.0
-        return max(-self.max_glide, min(self.max_glide, v))
+        decay = math.exp(-age / tau)
+        out = []
+        for v0, carry in zip(self._fling_v0, self._carry, strict=True):
+            # A stacked glide's carried speed eases in the same way (scaled so it adds
+            # its full glide distance), keeping the release continuous with the drag.
+            v = (v0 * (1.0 + k * ease) + carry * tau / d * ease) * decay
+            if v * v0 < 0:
+                # boost well below 1 makes 1 + k * ease negative: the glide has stopped,
+                # it must never turn round and scroll the page back.
+                v = 0.0
+            out.append(v)
+        n = _norm((out[0], out[1]))
+        if n > self.max_glide:
+            return out[0] * self.max_glide / n, out[1] * self.max_glide / n
+        return out[0], out[1]
 
     def _apply_fling(self, t: float) -> None:
-        if self._fling_v == 0.0:
+        if not self.gliding:
             return
         dt = t - self._fling_t
         if dt <= 0:
@@ -786,20 +868,23 @@ class GestureController:
         # Midpoint speed over this frame: accurate for both the ramp and the decay.
         v_mid = self._glide_speed(self._fling_age + dt / 2)
         self._fling_age += dt
-        amount = v_mid * dt + self._fling_rem
-        units = int(amount)
-        self._fling_rem = amount - units
-        if units:
-            self.pointer.scroll(units)
+        amount = (v_mid[0] * dt + self._fling_rem[0], v_mid[1] * dt + self._fling_rem[1])
+        units = (float(int(amount[0])), float(int(amount[1])))
+        self._fling_rem = (amount[0] - units[0], amount[1] - units[1])
+        ux, uy = int(units[0]), int(units[1])
+        if uy:
+            self.pointer.scroll(uy)
+        if ux:
+            self.pointer.scroll_h(ux)
         self._fling_v = self._glide_speed(self._fling_age)
-        if abs(self._fling_v) < HI_RES_PER_NOTCH / 2:  # under half a notch per second
+        if _norm(self._fling_v) < HI_RES_PER_NOTCH / 2:  # under half a notch per second
             self._stop_fling()
 
     def _stop_fling(self) -> None:
-        self._fling_v = 0.0
-        self._fling_v0 = 0.0
-        self._carry = 0.0
-        self._fling_rem = 0.0
+        self._fling_v = ZERO
+        self._fling_v0 = ZERO
+        self._carry = ZERO
+        self._fling_rem = ZERO
 
     def _zoom(self, spread: float, t: float) -> None:
         """Turn changes in hand spread into zoom steps. One step (one wheel notch, or one
@@ -886,4 +971,7 @@ class GestureController:
         st.events = self._events
         st.actions = self._actions
         st.zoom_blocked_new, self._blocked_new = self._blocked_new, False
+        if self.mode == Mode.SCROLL:
+            st.scroll_axis = {"x": "horizontal", "y": "vertical", "both": "both",
+                              None: ""}[self._scroll_axis]
         return st

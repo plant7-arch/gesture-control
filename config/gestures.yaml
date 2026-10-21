@@ -104,16 +104,24 @@ cursor:
   deadzone: 0.0015      # ignore cursor changes smaller than this (fraction of screen)
 
 scroll:
-  # Peace sign = finger on the glass. Move up/down to scroll; leave the pose while the
-  # hand is still moving (open palm, curl the fingers) to fling, like a phone.
+  # Peace sign = finger on the glass. Move up/down or left/right to scroll; leave the
+  # pose while the hand is still moving (open palm, curl the fingers) to fling, like a
+  # phone. Everything below works the same in both directions.
   notches_per_height: 25  # wheel notches for moving your hand the full frame height
+                          #   (sideways: the same hand distance scrolls the same amount)
   direction: natural      # natural: content follows your hand, like a phone (hand up =
-                          #   page moves up) | traditional: like a mouse wheel
+                          #   page moves up, hand right = page moves right)
+                          #   | traditional: like a mouse wheel
+  horizontal: true        # also scroll sideways (false: up/down only)
+  axis_lock: true         # each swipe scrolls along one axis only (the one your hand
+                          #   moves along first), so a slightly slanted swipe doesn't
+                          #   drift sideways. false: scroll freely in any direction
   deadzone: 0.0015
   settle_ms: 200          # ignore movement just after switching to the scroll pose
   fling:
     enabled: true
-    min_speed: 0.8        # hand speed at lift (frame heights per second) needed to fling
+    min_speed: 0.8        # hand speed at lift (frame heights per second, any direction)
+                          #   needed to fling
     boost: 2.0            # glide speed = swipe speed x boost. Higher = flings go further;
                           #   dragging is unaffected. 1.0 = glide at exactly swipe speed
     boost_ramp_s: 0.15    # the glide starts at your drag speed and eases up to the boosted

@@ -222,3 +222,31 @@ def test_stalled_preview_dims_the_last_frame_and_says_why(monkeypatch):
 def test_stalled_preview_before_any_frame_uses_the_configured_size(monkeypatch):
     o, texts, _ = _overlay(monkeypatch)
     assert o.stalled_image(1.0).shape == (240, 320, 3)
+
+
+# -- scroll test mode ---------------------------------------------------------------------
+
+def test_scroll_test_goes_down_up_right_left_and_back(capsys):
+    from conftest import RecordingPointer
+
+    from gesture_control.app import scroll_test
+
+    ptr = RecordingPointer("absolute")
+    scroll_test(dry_run=True, ptr=ptr, wait=lambda s: None)
+    kinds = [(k, u) for k, u in ptr.log]
+    assert kinds == ([("scroll", -24)] * 25 + [("scroll", 24)] * 25
+                     + [("hscroll", 24)] * 25 + [("hscroll", -24)] * 25)
+    assert ptr.scroll_total() == 0 and ptr.hscroll_total() == 0  # ends where it started
+    assert "Scrolling right" in capsys.readouterr().out
+
+
+def test_overlay_shows_the_scroll_axis(monkeypatch):
+    o, texts, np = _overlay(monkeypatch)
+    o.show_region = o.show_landmarks = False
+    o.pinch_start, o.pinch_release = 0.28, 0.42
+    from gesture_control.controller import Mode, Status
+
+    for axis in ("vertical", "horizontal", "both"):
+        o.draw(np.zeros((480, 640, 3), np.uint8), None,
+               Status(mode=Mode.SCROLL, scroll_axis=axis), 30.0, 10.0)
+    assert {"up/down", "sideways", "any way"} <= set(texts)

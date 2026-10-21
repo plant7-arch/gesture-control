@@ -107,6 +107,12 @@ class Overlay:
         _shade(frame, 0, 0, 250, 172)
         mode = "PAUSED" if st.paused else st.mode.value.upper()
         _text(frame, mode, (10, 28), colour, 0.8, 2)
+        if st.mode == Mode.SCROLL and not st.paused:
+            # Which way this swipe scrolls (the axis lock), once decided.
+            axis = {"vertical": "up/down", "horizontal": "sideways",
+                    "both": "any way"}.get(st.scroll_axis, "")
+            if axis:
+                _text(frame, axis, (125, 28), colour, 0.5, 1)
         fps_txt = f"{fps:4.1f} fps" if fps > 0 else "-- fps"
         _text(frame, f"{fps_txt}   {latency_ms:4.0f} ms", (10, 52))
         hand_txt = f"pose: {st.pose}" + (f" ({st.raw_pose})" if st.raw_pose != st.pose else "")

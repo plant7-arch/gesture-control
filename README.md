@@ -177,6 +177,7 @@ Useful options:
 | `--mode absolute` | Hand position = screen position (the default is relative, touchpad-like) |
 | `--calibrate` | Find the screen edges for absolute mode, then exit |
 | `--calibrate-trackball` | Optional: measure the trackball output by hand instead of using GNOME's screen size, then exit |
+| `--scroll-test` | Scroll down, up, right, then left under the mouse pointer (no camera), then exit: checks that both wheels reach your apps |
 | `--zoom-test` | Zoom in, then out, under the mouse pointer (a real touchpad pinch by default; no camera), then exit |
 | `--start-paused` | Start paused; hold a fist ~1 s to begin |
 | `--no-preview` | Run without the camera window (Ctrl+C, or `kill`, to quit) |
@@ -214,7 +215,7 @@ affected afterwards.
 | ...then pinch thumb + index | Left click; keep pinching and move to drag |
 | ...pinch thumb + index twice quickly | Double click |
 | ...then pinch thumb + middle (index stays up) | Right click |
-| Index + middle up (peace sign), move hand up/down | Scroll, phone-style: the page follows your hand |
+| Index + middle up (peace sign), move hand up/down or left/right | Scroll, phone-style: the page follows your hand |
 | ...swipe and leave the pose while still moving | Fling: the page keeps gliding, then slows down |
 | ...peace sign again while it glides | Stop the glide |
 | ...flick again quickly while it glides | Stack: the new fling adds the glide's speed |
@@ -250,7 +251,9 @@ glass; an **open palm** lifts it off.
 ![Peace sign = finger on the glass; open palm = finger lifted](docs/scroll/poses.png)
 
 **Hand up, page up:** the page sticks to your fingers, so raising your hand moves the
-content up and shows what's further down (the opposite of a mouse wheel).
+content up and shows what's further down (the opposite of a mouse wheel). Sideways works
+the same way: **hand right, page right**, showing what's further left. Everything below
+(drag, fling, catch, stack) works in both directions; the animations show up/down.
 
 The animations below were rendered by feeding hand movements into the app's own scroll
 code, so the timing and glide match the real app. Left: the camera view. Right: the page.
@@ -307,12 +310,35 @@ within a second of the catch and swipe the same way; a slow drag or a pause in b
 gives a normal fling. A catch only counts once the glide has run for about 0.1 s, so a
 tracking glitch in the middle of one long swipe can't make it stack and overshoot.
 
+### 7. Sideways, and keeping to one direction
+
+Move the peace sign left or right to scroll sideways: wide pages, images, spreadsheets,
+maps, timelines. The same hand distance scrolls the same amount either way.
+
+Each swipe **sticks to one direction**: the way your hand first moves (about 3 px in the
+camera image) decides whether that swipe scrolls up/down or sideways, so a slightly
+slanted swipe doesn't drift sideways, and a fling glides straight. The preview shows the
+choice next to SCROLL (`up/down` or `sideways`). The next touch decides again. The
+movement before the decision isn't lost; it's sent right after.
+
+- To scroll freely in any direction (diagonals too, like dragging a map), set
+  `scroll:` `axis_lock: false`.
+- To scroll up/down only, as before, set `scroll:` `horizontal: false`.
+- A flick only stacks on a glide going the same way, so a sideways flick after an
+  up/down glide is a fresh fling.
+- To check that sideways scrolling reaches your apps, run
+  `uv run gesture-control --scroll-test` with the pointer over a wide page: it scrolls
+  down, up, right and left.
+
 ### If scrolling doesn't behave
 
 | Problem | Fix |
 |---|---|
 | Nothing scrolls when I start moving | Hold the peace sign still for a moment first. The preview's top-left label must say SCROLL; if it says IDLE, keep the ring and little finger curled |
-| It scrolls the wrong way for me | `scroll:` `direction: traditional` in `config/local.yaml` |
+| It scrolls the wrong way for me | `scroll:` `direction: traditional` in `config/local.yaml` (both directions) |
+| It scrolls sideways when I meant up/down | Start the swipe straight up or down: the first movement picks the direction. Or `scroll:` `horizontal: false` |
+| Sideways does nothing in an app | Run `--scroll-test` with the pointer over that app. If up/down works there but sideways doesn't, the app ignores the sideways mouse wheel (the page may also simply not be wider than the window) |
+| I want diagonal scrolling (maps) | `scroll:` `axis_lock: false` |
 | It glides when I don't want | Stop your hand before opening your palm, raise `fling.min_speed`, or set `fling.enabled: false` |
 | It never glides | Open your palm during the swipe, not after it; or lower `fling.min_speed` to `0.6` |
 | Flings don't go far enough | Raise `fling.boost` (default 2.0), e.g. `3.0`. Drags are unaffected. Or flick repeatedly (lesson 6) |
@@ -484,6 +510,8 @@ the calibration itself) and tells you, so nothing is lost silently.
 | Get double clicks more easily | `double_click:` `window_ms: 900` |
 | Scroll faster | `scroll:` `notches_per_height: 40` |
 | Scroll like a mouse wheel instead of a phone | `scroll:` `direction: traditional` |
+| Scroll up/down only (no sideways) | `scroll:` `horizontal: false` |
+| Scroll diagonally (maps) | `scroll:` `axis_lock: false` |
 | Fling further (drags unchanged) | `scroll:` `fling:` `boost: 3.0` |
 | Repeated flicks speed up less / not at all | `scroll:` `fling:` `stack:` `factor: 0.5` / `enabled: false` |
 | Longer / shorter glide after a fling | `scroll:` `fling:` `time_constant_s: 0.7` / `0.3` |
@@ -584,14 +612,16 @@ Absolute mode only:
 | Setting | Default | What it does |
 |---|---|---|
 | `notches_per_height` | `25` | Wheel notches for moving your hand the full camera-image height. Higher = faster scrolling |
-| `direction` | `natural` | `natural`: the page follows your hand, like a phone. `traditional`: like a mouse wheel (hand up = scroll up). Replaces the old `invert` setting |
-| `deadzone` | `0.0015` | Ignore vertical movement smaller than this per frame |
+| `direction` | `natural` | `natural`: the page follows your hand, like a phone (up/down and sideways). `traditional`: like a mouse wheel (hand up = scroll up, hand right = scroll right). Replaces the old `invert` setting |
+| `horizontal` | `true` | Also scroll sideways. `false`: up/down only, as in versions before 0.16 |
+| `axis_lock` | `true` | Each swipe scrolls along one direction only, the one your hand first moves along, so slanted swipes don't drift. `false`: scroll freely in any direction, diagonals included |
+| `deadzone` | `0.0015` | Ignore hand movement smaller than this (camera-image heights) |
 | `settle_ms` | `200` | Ignore movement just after switching to the scroll pose |
 | `fling.enabled` | `true` | Keep gliding after a fast swipe ends |
-| `fling.min_speed` | `0.8` | Hand speed when leaving the pose (camera-image heights per second) needed for a glide. Lower = glides more easily |
+| `fling.min_speed` | `0.8` | Hand speed when leaving the pose (camera-image heights per second, in any direction) needed for a glide. Lower = glides more easily |
 | `fling.boost` | `2.0` | The glide goes this many times further than at plain swipe speed. Higher = flings go further, with the glide lasting only slightly longer. Doesn't affect dragging. `1.0` = glide at exactly your swipe speed |
 | `fling.boost_ramp_s` | `0.15` | The glide starts at exactly your drag speed, with no pause, and eases up to the boosted speed over about this long, so drag and glide feel like one motion. Raise it if the speed-up after letting go feels abrupt |
-| `fling.max_notches_per_s` | `300` | Speed limit for any glide, stacked or not |
+| `fling.max_notches_per_s` | `300` | Speed limit for any glide, stacked or not (a diagonal glide keeps its angle) |
 | `fling.stack.enabled` | `true` | A quick flick during a glide adds the glide's speed to the new fling |
 | `fling.stack.window_s` | `1.0` | The new swipe must be released within this long after the peace sign catches the glide |
 | `fling.stack.factor` | `1.0` | Share of the caught glide speed carried into the new fling (`0.5` = half) |
@@ -671,7 +701,7 @@ uv run pytest
 The tests need no camera, `/dev/uinput` or desktop: the virtual devices run in dry-run
 mode and record what they would have sent, and hands are fed in frame by frame on a
 fake 30 fps clock. They cover the model download, pose detection, pinch arming, clicks,
-double clicks, drags, scrolling and flings, pause, two-hand zoom, cursor movement in
+double clicks, drags, scrolling and flings (up/down and sideways, with the axis lock), pause, two-hand zoom, cursor movement in
 both modes, config loading and validation, where config and the model live (project
 folder or installed), the two-hand tracking switch (with fake trackers), clean shutdown
 on Ctrl+C / `kill`, the stalled-camera preview, and the camera reader's shutdown (with

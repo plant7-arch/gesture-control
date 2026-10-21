@@ -100,12 +100,19 @@ class RecordingPointer(VirtualPointer):
         if hi_res_units:
             self.log.append(("scroll", int(hi_res_units)))
 
+    def scroll_h(self, hi_res_units: int) -> None:
+        if hi_res_units:
+            self.log.append(("hscroll", int(hi_res_units)))
+
     # convenience views
     def of(self, kind: str) -> list[tuple]:
         return [e for e in self.log if e[0] == kind]
 
     def scroll_total(self) -> int:
         return sum(e[1] for e in self.of("scroll"))
+
+    def hscroll_total(self) -> int:
+        return sum(e[1] for e in self.of("hscroll"))
 
     def last_abs(self) -> tuple[float, float] | None:
         a = self.of("abs")

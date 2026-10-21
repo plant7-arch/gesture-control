@@ -36,6 +36,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--start-paused", action="store_true", help="start with gestures paused")
     p.add_argument("--pointer-test", action="store_true",
                    help="move the cursor around without the camera, then exit")
+    p.add_argument("--scroll-test", action="store_true",
+                   help="scroll down, up, right, then left under the pointer (no camera), "
+                        "then exit")
     p.add_argument("--zoom-test", action="store_true",
                    help="zoom in then out under the pointer (a real touchpad pinch by "
                         "default; no camera), then exit")
@@ -142,6 +145,37 @@ def pinch_test(cfg, dry_run: bool) -> None:
               "lines, and try an app listed in the README (Zoom section).")
     finally:
         tp.close()
+
+
+SCROLL_TEST_STEPS = (("down", 0, -1), ("up", 0, 1), ("right", 1, 0), ("left", -1, 0))
+
+
+def scroll_test(dry_run: bool, ptr=None, wait=time.sleep) -> None:
+    """Smooth-scroll 5 notches each way, down, up, right, left, under the pointer:
+    checks that the wheel and the sideways wheel reach your apps. ptr: the pointer
+    the app itself would use (already created), else a plain one is made."""
+    print("Scroll test: put the mouse pointer over a page that scrolls both ways (a wide")
+    print("image in a browser, a spreadsheet, a map) now.")
+    for n in (3, 2, 1):
+        print(f"  starting in {n}...")
+        wait(1)
+    if ptr is None:
+        ptr = _make_pointer("absolute", dry_run, settle=0.5)
+    try:
+        for label, sx, sy in SCROLL_TEST_STEPS:
+            print(f"Scrolling {label}...")
+            for _ in range(25):                  # 5 notches as 25 smooth steps
+                if sy:
+                    ptr.scroll(sy * 24)
+                if sx:
+                    ptr.scroll_h(sx * 24)
+                wait(0.02)
+            wait(0.6)
+        print("Done. The page should have gone down and back up, then right and back "
+              "left. If only up/down worked, the app under the pointer may not scroll "
+              "sideways with a mouse wheel (try a wide image in Firefox).")
+    finally:
+        ptr.close()
 
 
 def zoom_test(cfg, dry_run: bool) -> None:
@@ -360,6 +394,11 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
         from .trackball import run_calibration as run_trackball_calibration
 
         run_trackball_calibration(cfg, args.dry_run, args.config)
+        return
+    if args.scroll_test:
+        from .display import primary_display
+
+        scroll_test(args.dry_run, _resolve_output(cfg, args.dry_run, primary_display()))
         return
     if args.zoom_test:
         zoom_test(cfg, args.dry_run)

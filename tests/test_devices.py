@@ -50,6 +50,46 @@ def test_smooth_scroll_adds_up_to_whole_notches(capsys):
     assert p._wheel_acc == -60
 
 
+def test_sideways_scroll_adds_up_to_whole_notches_on_its_own(capsys):
+    """The sideways wheel keeps its own count: mixing both axes loses nothing."""
+    p = VirtualPointer(dry_run=True, settle=0)
+    for _ in range(3):
+        p.scroll_h(HI_RES_PER_NOTCH // 2)
+        p.scroll(HI_RES_PER_NOTCH // 3)
+    lines = capsys.readouterr().out.splitlines()
+    h = [int(x.split("notches ")[1].rstrip(")")) for x in lines if x.startswith("[pointer] hscroll")]
+    v = [int(x.split("notches ")[1].rstrip(")")) for x in lines if x.startswith("[pointer] scroll")]
+    assert h == [0, 1, 0] and v == [0, 0, 1]
+    assert p._hwheel_acc == 60 and p._wheel_acc == 0
+    p.release_all()
+    assert p._hwheel_acc == p._wheel_acc == 0
+
+
+class _FakeUI:
+    def __init__(self):
+        self.events = []
+
+    def write(self, etype, code, value):
+        self.events.append((etype, code, value))
+
+    def syn(self):
+        self.events.append("syn")
+
+
+def test_wheel_events_use_the_right_kernel_codes():
+    """Up/down: REL_WHEEL(_HI_RES); sideways: REL_HWHEEL(_HI_RES), positive = right."""
+    from evdev import ecodes as e
+
+    p = VirtualPointer(dry_run=True, settle=0)
+    p.dry_run, p._e, p._hi_res, p._ui = False, e, True, _FakeUI()
+    p.scroll_h(HI_RES_PER_NOTCH)
+    p.scroll(-HI_RES_PER_NOTCH // 2)
+    assert p._ui.events == [
+        (e.EV_REL, e.REL_HWHEEL_HI_RES, 120), (e.EV_REL, e.REL_HWHEEL, 1), "syn",
+        (e.EV_REL, e.REL_WHEEL_HI_RES, -60), "syn",
+    ]
+
+
 def test_absolute_positions_are_clamped_and_not_repeated(capsys):
     p = VirtualPointer(dry_run=True, settle=0)
     p.move_abs(1.5, -0.2)
@@ -134,3 +174,17 @@ def test_close_always_lifts(tp, fake_clock, monkeypatch):
     tp.begin(45)
     tp.close()
     assert not tp.is_down
+
+
+@pytest.mark.parametrize("mode", ["absolute", "relative"])
+def test_pointer_device_declares_the_sideways_wheel(monkeypatch, mode):
+    """Without REL_HWHEEL in its capabilities the kernel would drop sideways scrolls."""
+    from evdev import ecodes as e
+
+    from gesture_control import pointer as pm
+
+    seen = {}
+    monkeypatch.setattr(pm, "make_uinput", lambda caps, **kw: seen.update(caps) or _FakeUI())
+    VirtualPointer(mode=mode, dry_run=False, settle=0)
+    rel = seen[e.EV_REL]
+    assert {e.REL_WHEEL, e.REL_HWHEEL, e.REL_WHEEL_HI_RES, e.REL_HWHEEL_HI_RES} <= set(rel)

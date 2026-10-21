@@ -45,6 +45,7 @@ class VirtualPointer:
         self.dry_run = dry_run
         self._down: set[str] = set()
         self._wheel_acc = 0
+        self._hwheel_acc = 0
         self._last_abs: tuple[int, int] | None = None
         self._ui = None
         if dry_run:
@@ -55,8 +56,9 @@ class VirtualPointer:
 
         self._e = e
         self._btn = {"left": e.BTN_LEFT, "right": e.BTN_RIGHT, "middle": e.BTN_MIDDLE}
-        self._hi_res = hasattr(e, "REL_WHEEL_HI_RES")
-        rel = [e.REL_WHEEL] + ([e.REL_WHEEL_HI_RES] if self._hi_res else [])
+        self._hi_res = hasattr(e, "REL_WHEEL_HI_RES") and hasattr(e, "REL_HWHEEL_HI_RES")
+        rel = [e.REL_WHEEL, e.REL_HWHEEL] + (
+            [e.REL_WHEEL_HI_RES, e.REL_HWHEEL_HI_RES] if self._hi_res else [])
         caps: dict = {e.EV_KEY: list(self._btn.values())}
         if mode == "absolute":
             axis = AbsInfo(value=0, min=0, max=ABS_MAX, fuzz=0, flat=0, resolution=0)
@@ -148,20 +150,36 @@ class VirtualPointer:
     # -- wheel --------------------------------------------------------------
     def scroll(self, hi_res_units: int) -> None:
         """Scroll by hi-res units (120 = one wheel notch). Positive = up."""
+        self._wheel(hi_res_units, horizontal=False)
+
+    def scroll_h(self, hi_res_units: int) -> None:
+        """Scroll sideways by hi-res units (120 = one notch). Positive = right."""
+        self._wheel(hi_res_units, horizontal=True)
+
+    def _wheel(self, hi_res_units: int, horizontal: bool) -> None:
+        """Send hi-res units, plus a whole notch on the classic wheel axis each time
+        they add up to one (apps without hi-res support count notches)."""
         hi_res_units = int(hi_res_units)
         if hi_res_units == 0:
             return
-        self._wheel_acc += hi_res_units
-        notches = int(self._wheel_acc / HI_RES_PER_NOTCH)  # truncates toward zero
-        self._wheel_acc -= notches * HI_RES_PER_NOTCH
+        acc = (self._hwheel_acc if horizontal else self._wheel_acc) + hi_res_units
+        notches = int(acc / HI_RES_PER_NOTCH)  # truncates toward zero
+        acc -= notches * HI_RES_PER_NOTCH
+        if horizontal:
+            self._hwheel_acc = acc
+        else:
+            self._wheel_acc = acc
         if self.dry_run:
-            print(f"[pointer] scroll {hi_res_units:+d} (notches {notches:+d})")
+            what = "hscroll" if horizontal else "scroll"
+            print(f"[pointer] {what} {hi_res_units:+d} (notches {notches:+d})")
             return
         e = self._e
+        hi, lo = ((e.REL_HWHEEL_HI_RES, e.REL_HWHEEL) if horizontal
+                  else (e.REL_WHEEL_HI_RES, e.REL_WHEEL))
         if self._hi_res:
-            self._ui.write(e.EV_REL, e.REL_WHEEL_HI_RES, hi_res_units)
+            self._ui.write(e.EV_REL, hi, hi_res_units)
         if notches:
-            self._ui.write(e.EV_REL, e.REL_WHEEL, notches)
+            self._ui.write(e.EV_REL, lo, notches)
         if self._hi_res or notches:
             self._ui.syn()
 
@@ -169,7 +187,7 @@ class VirtualPointer:
     def release_all(self) -> None:
         for b in list(self._down):
             self.release(b)
-        self._wheel_acc = 0
+        self._wheel_acc = self._hwheel_acc = 0
 
     def close(self) -> None:
         self.release_all()

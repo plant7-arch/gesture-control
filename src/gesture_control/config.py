@@ -130,6 +130,8 @@ DEFAULTS: dict[str, Any] = {
     "scroll": {
         "notches_per_height": 25,
         "direction": "natural",
+        "horizontal": True,
+        "axis_lock": True,
         "deadzone": 0.0015,
         "settle_ms": 200,
         "fling": {

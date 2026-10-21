@@ -515,7 +515,7 @@ def test_glide_is_boosted():
 
 def test_peace_sign_catches_the_glide(rig):
     _swipe_and_lift(rig, 0.05)
-    assert rig.ctl._fling_v != 0
+    assert rig.ctl.gliding
     rig.step(pose=TWO)
     n = len(rig.ptr.of("scroll"))
     rig.hold(15, pose=TWO)                     # hand still on the glass
@@ -947,17 +947,19 @@ def test_camera_stall_while_idle_does_nothing(rig):
     assert st.events == [] and rig.ptr.log == []
 
 
+@pytest.mark.parametrize("axis", ["scroll", "hscroll"])
 @pytest.mark.parametrize("boost", [0.1, 0.2, 0.3, 0.5, 1.0, 2.0])
-def test_glide_never_turns_round(boost):
+def test_glide_never_turns_round(boost, axis):
     """However low fling.boost is (it may be 0.1), the glide only ever moves the page
-    the way it was flung."""
+    the way it was flung, on either axis."""
     r = Rig(make_config(scroll={"fling": {"boost": boost}}))
     c = r.ctl
-    c._fling_v0 = c._fling_v = 6000.0
-    c._fling_age, c._fling_t, c._carry = 0.0, 0.0, 0.0
+    c._fling_v0 = c._fling_v = (0.0, 6000.0) if axis == "scroll" else (6000.0, 0.0)
+    c._fling_age, c._fling_t = 0.0, 0.0
     t = 0.0
-    while c._fling_v and t < 10:
+    while c.gliding and t < 10:
         t += DT
         c._apply_fling(t)
-    steps = [e[1] for e in r.ptr.of("scroll")]
+    steps = [e[1] for e in r.ptr.of(axis)]
     assert steps and all(s > 0 for s in steps)
+    assert r.ptr.of("hscroll" if axis == "scroll" else "scroll") == []
