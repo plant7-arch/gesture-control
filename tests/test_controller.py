@@ -595,6 +595,131 @@ def test_scroll_lift_when_hand_leaves_view_mid_swipe(rig):
     assert "fling" in rig.events
 
 
+# -- a pinch that looks like a fist ------------------------------------------------------
+
+def _bent_pinch(bend: float):
+    """Real landmarks: the index bends toward the palm by `bend` (0 = straight, 1 =
+    curled into a fist) and the thumb tip touches its tip."""
+    from conftest import make_hand
+
+    from gesture_control.features import compute_features
+
+    p = make_hand(up=("index",))
+    tip_straight, tip_curl = p[6] + (0, -0.55, 0), p[5] + (0, 0.30, -0.25)
+    p[8] = tip_straight * (1 - bend) + tip_curl * bend
+    p[7] = (p[6] + p[8]) / 2
+    p[4] = p[8] + (0.02, 0.0, 0.0)
+    return compute_features(p, 1.15, 0.95)
+
+
+def test_a_bent_index_pinch_reads_as_a_fist():
+    """Why the fix exists: halfway bent, the pose classifier calls the pinch a fist."""
+    assert _bent_pinch(0.5).pose == FIST and _bent_pinch(0.5).reach_index > 1.05
+
+
+@pytest.mark.parametrize("bend", [0.5, 0.6, 0.7])
+def test_bent_index_pinch_still_clicks(bend):
+    """The pinch closes over a couple of frames (normal speed); the pose used to turn
+    to FIST before the pinch was confirmed, dropping to IDLE without a click."""
+    import dataclasses
+
+    r = Rig()
+    r.point()
+    r.left_open()
+    pinch = _bent_pinch(bend)
+    r.step(dataclasses.replace(pinch, pinch_index=0.35))   # closing, already bent
+    for _ in range(6):
+        r.step(pinch)
+    assert r.ptr.is_down("left") and r.last.mode == Mode.MOVE
+    assert "left down" in r.events
+
+
+def test_holding_a_bent_pinch_drags_and_never_pauses():
+    r = Rig()
+    r.point()
+    r.left_open()
+    pinch = _bent_pinch(0.6)
+    st = r.hold(60, f=pinch)                      # 2 s, longer than fist_hold_s
+    assert not st.paused and st.fist_progress == 0 and r.ptr.is_down("left")
+    r.left_open(3)
+    assert not r.ptr.is_down("left") and r.last.mode == Mode.MOVE
+
+
+def test_index_curled_into_the_palm_is_still_a_fist():
+    """The reach check keeps real fists working: pause from pointing still works."""
+    r = Rig()
+    r.point()
+    fist = _bent_pinch(0.85)                      # index tip deep in the palm
+    assert fist.reach_index < 1.05 and fist.pose == FIST
+    st = r.hold(int(1.1 / DT) + 5, f=fist)
+    assert st.paused and not r.ptr.is_down("left")
+
+
+def test_real_fist_from_pointing_pauses():
+    r = Rig()
+    r.point()
+    st = r.hold(int(1.1 / DT) + 5, pose=FIST, pinch_index=0.3, reach_index=0.8)
+    assert st.paused
+
+
+# -- why a closed pinch isn't clicking ----------------------------------------------------
+
+@pytest.mark.parametrize("setup, kw, words", [
+    ("closed_from_start", {}, "open thumb and index first"),
+    ("armed", {"facing": 0.3}, "hand turned (facing 0.30 < 0.60)"),
+    ("armed", {"reach_index": 0.9}, "index bent into a fist (reach 0.90 < 1.05)"),
+    ("palm", {}, "not pointing (pose: palm)"),
+])
+def test_closed_pinch_that_doesnt_click_says_why(setup, kw, words):
+    r = Rig()
+    if setup == "closed_from_start":
+        r.hold(8, pose=POINT, pinch_index=0.1)    # never seen apart: not armed
+        st = r.last
+    elif setup == "palm":
+        r.hold(8, pose=PALM, pinch_index=1.0)
+        st = r.hold(5, pose=PALM, pinch_index=0.1)
+    else:
+        r.point()
+        r.left_open()
+        st = r.hold(5, pose=POINT, pinch_index=0.1, **kw)
+    assert st.left_block == words and not r.ptr.is_down("left")
+
+
+def test_no_reason_while_clicking_or_with_fingers_apart(rig):
+    rig.point()
+    assert rig.left_open().left_block == ""
+    rig.left_pinch()
+    assert rig.last.left_block == "" and rig.ptr.is_down("left")
+
+
+def test_blocked_click_is_reported_once_per_pinch():
+    r = Rig()
+    r.point()
+    r.left_open()
+    r.hold(20, pose=POINT, pinch_index=0.1, facing=0.3)
+    assert r.events.count("left click blocked: hand turned (facing 0.30 < 0.60)") == 1
+    r.left_open(3)                                 # open again, then the same thing
+    r.hold(20, pose=POINT, pinch_index=0.1, facing=0.3)
+    assert sum(e.startswith("left click blocked") for e in r.events) == 2
+
+
+def test_overlay_shows_why_the_click_is_blocked(monkeypatch):
+    import numpy as np
+
+    from gesture_control import overlay as ov
+    from gesture_control.controller import Status
+
+    texts = []
+    monkeypatch.setattr(ov, "_text", lambda img, s, *a, **k: texts.append(s))
+    o = ov.Overlay.__new__(ov.Overlay)
+    o.show_region = o.show_landmarks = False
+    o.pinch_start, o.pinch_release = 0.28, 0.42
+    o.draw(np.zeros((480, 640, 3), np.uint8), None,
+           Status(hand=True, left_block="open thumb and index first", last_action="x"),
+           30.0, 10.0)
+    assert "L: open thumb and index first" in texts and "x" not in texts
+
+
 # -- pause -------------------------------------------------------------------------------
 
 def _fist(rig, seconds=1.1):

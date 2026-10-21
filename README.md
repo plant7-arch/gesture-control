@@ -578,7 +578,7 @@ about 9 cm), so they don't change with distance from the camera.
 | `start` | `0.28` | A pinch begins when the thumb–fingertip distance drops below this (left tick on the L / R bars). Higher = registers more easily |
 | `release` | `0.42` | It ends when the distance rises above this (right tick). Must be larger than `start` |
 | `confirm_frames` | `3` | Frames below `start` before the click fires. Higher = fewer accidental clicks, slightly slower |
-| `min_finger_reach` | `1.05` | Left pinch only counts if the index fingertip is at least this far from the wrist, so a fist isn't read as a click |
+| `min_finger_reach` | `1.05` | Left pinch only counts if the index fingertip is at least this far from the wrist (in palm lengths), so a fist isn't read as a click. It also tells a bent-finger pinch (above it) from a fist (below it) |
 | `right_min_reach` | `0.0` | Same check for the middle finger and right click. `0` = off |
 | `min_facing` | `0.6` | Pinches only start when your hand faces the camera at least this squarely (1 = square on, 0 = edge-on) |
 
@@ -695,6 +695,16 @@ The preview shows live values that help you choose settings:
   right tick) while your hand faces the camera, then closes. The L / R label turns green
   when armed. If a bar goes red but nothing clicks, check that its label was green first:
   open the fingers a little wider before tapping.
+- **Why a pinch didn't click**: while your thumb and index tips are together without a
+  click, the bottom line of the panel says why, in orange, for example
+  `L: open thumb and index first` (not armed), `L: hand turned (facing 0.52 < 0.60)`,
+  `L: index bent into a fist (reach 0.98 < 1.05)` (lower `pinch.min_finger_reach` a
+  little if your pinches really bend that far), or `L: not pointing (pose: palm)`. With
+  `-v` the terminal prints it too, once per pinch (`left click blocked: ...`).
+- **Bent-finger pinches**: pinching bends the index toward the thumb, and a pinch bent
+  about halfway or more reads as a fist (the raw pose in brackets says `fist`). While the
+  fingertips are together and the index still reaches forward, the app treats that as a
+  pinch, not a fist: it clicks, and holding it doesn't pause.
 - **Double click** (`double_click`): the second pinch must start within `window_ms`
   (700) of letting go of the first, with the cursor within `max_move` of the first click.
   It then snaps back to the first click's spot, so a little drift doesn't matter.

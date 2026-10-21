@@ -126,7 +126,10 @@ class Overlay:
                 _text(frame, f"facing {st.facing:.2f}  turn palm to camera", (10, 144), ORANGE, 0.45)
             else:
                 _text(frame, f"facing {st.facing:.2f}", (10, 144), GREY, 0.45)
-        if st.last_action:
+        if st.left_block:
+            # Fingertips closed but no click: the reason, where the last action goes.
+            _text(frame, f"L: {st.left_block}", (10, 164), ORANGE, 0.4)
+        elif st.last_action:
             _text(frame, st.last_action, (10, 164), GREY, 0.45)
 
         if st.zoom_blocked:

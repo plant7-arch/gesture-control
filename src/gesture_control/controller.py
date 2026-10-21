@@ -72,6 +72,7 @@ class Status:
     facing: float | None = None
     pinch_blocked: bool = False  # hand turned too far for a reliable pinch
     left_armed: bool = False     # fingers seen apart: the next close will click
+    left_block: str = ""         # fingertips closed but not clicking: why
     right_armed: bool = False
     cursor: tuple[float, float] | None = None  # normalized screen position
     fist_progress: float = 0.0
@@ -200,6 +201,7 @@ class GestureController:
         self.min_reach = float(pc["min_finger_reach"])
         self.right_min_reach = float(pc["right_min_reach"])
         self.min_facing = float(pc["min_facing"])
+        self._block_frames, self._block_said = 0, False
 
         self.cursor_filter = OneEuroFilter(**cc["filter"])
         self.scroll_filter = OneEuroFilter(**sc["filter"])
@@ -402,7 +404,15 @@ class GestureController:
             self._rebase()
         st.hand = True
         st.raw_pose = feats.pose
-        pose = self.pose.update(feats.pose)
+        # A pinch bends the index finger toward the thumb, and once it's bent about
+        # halfway the hand reads as a fist. While the fingertips are closed together
+        # and the index still reaches forward (a real fist curls it into the palm),
+        # it's a pinch: don't let it switch to IDLE (dropping the click) or count
+        # towards pausing.
+        raw = feats.pose
+        if raw == FIST and self._pinch_posture(feats):
+            raw = NONE
+        pose = self.pose.update(raw)
         st.pose = pose
         st.pinch_index, st.pinch_middle = feats.pinch_index, feats.pinch_middle
 
@@ -531,9 +541,42 @@ class GestureController:
                 settling = t - self._mode_since < self._settle_s or feats.pose != TWO
                 self._scroll(anchor, t, settling=settling)
 
+        # Fingertips closed but no click: say why (preview, and once per pinch with -v).
+        st.left_block = self._left_block(feats, pose, facing_ok)
+        if feats.pinch_index > self.left.release_t:
+            self._block_frames, self._block_said = 0, False
+        elif st.left_block:
+            self._block_frames += 1
+            if self._block_frames >= self.left.confirm and not self._block_said:
+                self._block_said = True
+                self._act(f"left click blocked: {st.left_block}")
         return self._status(st)
 
     # -- internals ------------------------------------------------------------
+    def _pinch_posture(self, feats: HandFeatures) -> bool:
+        """Thumb and index tips together with the index reaching forward: a pinch."""
+        return (feats.pinch_index < self.left.release_t
+                and feats.reach_index >= self.min_reach)
+
+    def _left_block(self, feats: HandFeatures, pose: str, facing_ok: bool) -> str:
+        """Why fingertips that are closed together aren't clicking ("" if they are,
+        or are about to: the pinch must hold for pinch.confirm_frames)."""
+        if feats.pinch_index >= self.left.start or self.pointer.is_down("left"):
+            return ""  # fingers apart, or clicking (a pinch outside MOVE never clicks)
+        reach_low = feats.reach_index < self.min_reach
+        if self.mode != Mode.MOVE:
+            return (f"not pointing (pose: {pose})"
+                    + (f", index bent into a fist (reach {feats.reach_index:.2f} < "
+                       f"{self.min_reach:.2f})" if reach_low else ""))
+        if not facing_ok:
+            return f"hand turned (facing {feats.facing:.2f} < {self.min_facing:.2f})"
+        if reach_low:
+            return (f"index bent into a fist (reach {feats.reach_index:.2f} < "
+                    f"{self.min_reach:.2f})")
+        if not self.left.armed:
+            return "open thumb and index first"
+        return ""
+
     def _enter(self, mode: Mode) -> None:
         if self.mode == Mode.MOVE and mode != Mode.MOVE:
             self.pointer.release_all()
