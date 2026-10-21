@@ -55,7 +55,9 @@ DEFAULTS: dict[str, Any] = {
         "abs_scale": [1.0, 1.0],
         "deadzone": 0.0015,
         "relative": {
-            "output": "tablet",
+            "output": "auto",
+            "trackball_counts": [0, 0],
+            "trackball_mouse_speed": None,
             "gain_slow": 0.05,
             "gain_fast": 0.4,
             "speed_slow": 0.6,
@@ -208,6 +210,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     boost = cfg["scroll"]["fling"]["boost"]
     if not isinstance(boost, (int, float)) or isinstance(boost, bool) or not 0.1 <= boost <= 10:
         raise ValueError("scroll.fling.boost must be a number between 0.1 and 10")
+    _check_ranges(cfg)
     if cfg["zoom"]["method"] not in ("touchpad", "ctrl_scroll", "keys"):
         raise ValueError("zoom.method must be 'touchpad', 'ctrl_scroll' or 'keys'")
     tpc = cfg["zoom"]["touchpad"]
@@ -220,8 +223,13 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         raise ValueError("zoom.notch_ratio must be a number between 1.01 and 3")
     if cfg["scroll"]["direction"] not in ("natural", "traditional"):
         raise ValueError("scroll.direction must be 'natural' or 'traditional'")
-    if cfg["cursor"]["relative"]["output"] not in ("tablet", "mouse"):
-        raise ValueError("cursor.relative.output must be 'tablet' or 'mouse'")
+    if cfg["cursor"]["relative"]["output"] not in ("auto", "trackball", "tablet", "mouse"):
+        raise ValueError("cursor.relative.output must be auto, trackball, tablet or mouse")
+    tc = cfg["cursor"]["relative"]["trackball_counts"]
+    if not (isinstance(tc, (list, tuple)) and len(tc) == 2
+            and all(isinstance(v, (int, float)) and v >= 0 for v in tc)):
+        raise ValueError("cursor.relative.trackball_counts must be two numbers >= 0 "
+                         "(set by --calibrate-trackball)")
     if cfg["cursor"]["anchor"] not in ("knuckles", "index_mcp", "index_tip", "palm_center"):
         raise ValueError("cursor.anchor must be knuckles, index_mcp, index_tip or palm_center")
     scale = cfg["cursor"]["abs_scale"]
@@ -251,25 +259,84 @@ def gnome_double_click_ms(default: int = 400) -> int:
         return default
 
 
+def _check_ranges(cfg: dict[str, Any]) -> None:
+    """Catch values that would make the app misbehave (not just feel different)."""
+    def num(path: str) -> float:
+        node: Any = cfg
+        for part in path.split("."):
+            node = node[part]
+        if isinstance(node, bool) or not isinstance(node, (int, float)):
+            raise ValueError(f"{path} must be a number (got {node!r})")
+        return float(node)
+
+    def positive(*paths: str) -> None:
+        for p in paths:
+            if num(p) <= 0:
+                raise ValueError(f"{p} must be greater than 0 (got {num(p)})")
+
+    positive("pinch.start", "pinch.release", "pose.extend_ratio", "pose.curl_ratio",
+             "cursor.relative.gain_slow", "cursor.relative.gain_fast",
+             "cursor.relative.screen_aspect", "scroll.notches_per_height",
+             "scroll.fling.time_constant_s", "scroll.fling.boost",
+             "scroll.fling.max_notches_per_s", "pause.fist_hold_s",
+             "zoom.touchpad.gain")
+    if num("pinch.release") <= num("pinch.start"):
+        raise ValueError(
+            f"pinch.release ({num('pinch.release')}) must be larger than pinch.start "
+            f"({num('pinch.start')}); otherwise a resting thumb clicks over and over")
+    if num("pose.extend_ratio") <= num("pose.curl_ratio"):
+        raise ValueError(
+            f"pose.extend_ratio ({num('pose.extend_ratio')}) must be larger than "
+            f"pose.curl_ratio ({num('pose.curl_ratio')})")
+    if num("cursor.relative.speed_fast") <= num("cursor.relative.speed_slow"):
+        raise ValueError("cursor.relative.speed_fast must be larger than speed_slow")
+    for p in ("pose.debounce_frames", "pinch.confirm_frames"):
+        if num(p) < 1:
+            raise ValueError(f"{p} must be at least 1")
+    for p in ("pinch.min_facing", "scroll.fling.stack.factor"):
+        if not 0 <= num(p) <= 1.5:
+            raise ValueError(f"{p} must be between 0 and 1.5")
+    r = cfg["cursor"]["region"]
+    if not (0 <= r["x_min"] < r["x_max"] <= 1 and 0 <= r["y_min"] < r["y_max"] <= 1):
+        raise ValueError("cursor.region must have 0 <= x_min < x_max <= 1 and "
+                         "0 <= y_min < y_max <= 1")
+
+
 def pointer_device_mode(cfg: dict[str, Any]) -> str:
-    """Which virtual device the cursor mode needs: relative mode normally drives the
-    absolute (tablet) device with its own cursor; output: mouse uses relative events."""
+    """Which virtual device the cursor output needs: relative events for the mouse and
+    trackball outputs, absolute positions for the tablet output and absolute mode.
+    (cursor.relative.output must already be resolved from "auto".)"""
     cc = cfg["cursor"]
-    if cc["mode"] == "relative" and cc["relative"]["output"] == "mouse":
+    if cc["mode"] == "relative" and cc["relative"]["output"] in ("mouse", "trackball"):
         return "relative"
     return "absolute"
 
 
-def save_calibration(abs_scale: tuple[float, float], config_path: str | Path | None = None) -> Path:
-    """Write cursor.abs_scale to calibration.yaml next to the main config."""
+def update_calibration(updates: dict[str, Any], config_path: str | Path | None = None) -> Path:
+    """Merge `updates` into calibration.yaml next to the main config, keeping whatever
+    else it holds (screen-edge and trackball calibration live side by side)."""
     folder = (Path(config_path) if config_path else DEFAULT_CONFIG_PATH).parent
     folder.mkdir(parents=True, exist_ok=True)
     out = folder / CALIBRATION_FILE
+    data: dict[str, Any] = {}
+    if out.exists():
+        try:
+            data = yaml.safe_load(out.read_text()) or {}
+        except yaml.YAMLError:
+            data = {}
+    data = _deep_merge(data, updates)
     out.write_text(
-        "# Written by: gesture-control --calibrate\n"
-        "# Fraction of the virtual mouse range where the cursor reaches the right / bottom\n"
-        "# edge of the screen. Delete this file to undo the calibration.\n"
-        "cursor:\n"
-        f"  abs_scale: [{abs_scale[0]:.4f}, {abs_scale[1]:.4f}]\n"
+        "# Written by: gesture-control --calibrate / --calibrate-trackball\n"
+        "# cursor.abs_scale: where the cursor reaches the right / bottom screen edge.\n"
+        "# cursor.relative.trackball_counts: movement units across the screen.\n"
+        "# Delete this file (or a key) to undo a calibration.\n"
+        + yaml.safe_dump(data, sort_keys=False, default_flow_style=None)
     )
     return out
+
+
+def save_calibration(abs_scale: tuple[float, float], config_path: str | Path | None = None) -> Path:
+    """Write cursor.abs_scale (screen-edge calibration) to calibration.yaml."""
+    return update_calibration({"cursor": {"abs_scale": [round(float(abs_scale[0]), 4),
+                                                       round(float(abs_scale[1]), 4)]}},
+                              config_path)

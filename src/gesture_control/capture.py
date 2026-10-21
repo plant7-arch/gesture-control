@@ -24,6 +24,7 @@ class Camera:
         self._ts = 0.0
         self._seq = 0
         self.actual: tuple[int, int, float] = (0, 0, 0.0)
+        self._saved_dynamic_fps: int | None = None
 
     def start(self) -> None:
         if self.cfg.get("lock_framerate", True):
@@ -47,17 +48,54 @@ class Camera:
         self._thread = threading.Thread(target=self._run, name="camera", daemon=True)
         self._thread.start()
 
-    def _lock_framerate(self) -> None:
-        """Stop auto-exposure from lowering the frame rate in dim light (best effort)."""
+    CONTROL = "exposure_dynamic_framerate"
+
+    def _v4l2(self, *args: str) -> str | None:
         if not shutil.which("v4l2-ctl"):
-            return
+            return None
         try:
-            subprocess.run(
-                ["v4l2-ctl", "-d", f"/dev/video{self.index}", "-c", "exposure_dynamic_framerate=0"],
-                capture_output=True, timeout=3, check=False,
-            )
+            out = subprocess.run(["v4l2-ctl", "-d", f"/dev/video{self.index}", *args],
+                                 capture_output=True, text=True, timeout=3, check=False)
         except (OSError, subprocess.SubprocessError):
-            pass
+            return None
+        return out.stdout if out.returncode == 0 else None
+
+    def _lock_framerate(self) -> None:
+        """Stop auto-exposure from lowering the frame rate in dim light (best effort).
+        The camera's previous setting is remembered and put back by stop(), so other
+        apps (video calls) aren't left with it changed."""
+        out = self._v4l2("-C", self.CONTROL)  # e.g. "exposure_dynamic_framerate: 1"
+        if out is None or ":" not in out:
+            return  # no v4l2-ctl, or this camera doesn't have the control
+        try:
+            self._saved_dynamic_fps = int(out.split(":", 1)[1].strip())
+        except ValueError:
+            return
+        if self._saved_dynamic_fps != 0:
+            self._v4l2("-c", f"{self.CONTROL}=0")
+
+    def _default_value(self) -> int | None:
+        """The camera's own default for the control, from `v4l2-ctl --list-ctrls`:
+        "exposure_dynamic_framerate 0x009a0903 (bool) : default=1 value=0"."""
+        out = self._v4l2("--list-ctrls") or ""
+        for line in out.splitlines():
+            if line.strip().startswith(self.CONTROL) and "default=" in line:
+                try:
+                    return int(line.split("default=", 1)[1].split()[0])
+                except (ValueError, IndexError):
+                    return None
+        return None
+
+    def _restore_framerate(self) -> None:
+        saved, self._saved_dynamic_fps = self._saved_dynamic_fps, None
+        if saved is None:
+            return
+        if saved == 0:
+            # Already 0 at startup: most likely left that way by an earlier version of
+            # this app, so put back the camera's own default instead.
+            saved = self._default_value()
+        if saved not in (None, 0):
+            self._v4l2("-c", f"{self.CONTROL}={saved}")
 
     def _run(self) -> None:
         assert self._cap is not None
@@ -93,3 +131,4 @@ class Camera:
         if self._cap is not None:
             self._cap.release()
             self._cap = None
+        self._restore_framerate()

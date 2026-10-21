@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from . import touchpad as tpm
 from .features import FIST, NONE, POINT, TWO, HandFeatures
 from .filters import OneEuroFilter
 from .pointer import HI_RES_PER_NOTCH, VirtualKeys, VirtualPointer
@@ -145,7 +146,8 @@ class GestureController:
         tc = zc["touchpad"]
         self.tp_start_mm = float(tc["start_mm"])
         self.tp_gain = float(tc["gain"])
-        self._tp_ref: float | None = None   # log spread when the fingers went down
+        self._tp_ref: float | None = None   # log spread when the pinch started
+        self._tp_base = self.tp_start_mm      # finger separation when the pinch started
         self._blocked_said = False
         self.zoom_debounce = Debouncer(cfg["pose"]["debounce_frames"])
         self.zoom_step = math.log(float(zc["notch_ratio"]))
@@ -179,9 +181,19 @@ class GestureController:
         self.rel_speed_slow, self.rel_speed_fast = float(rc["speed_slow"]), float(rc["speed_fast"])
         self.rel_min_speed = float(rc["min_speed"])
         self.rel_filter = OneEuroFilter(**rc["filter"])
-        self.rel_output = rc["output"]
+        # app.py resolves "auto" before this; unresolved (tests, tools) means tablet.
+        self.rel_output = "tablet" if rc["output"] == "auto" else rc["output"]
         self.screen_aspect = float(rc["screen_aspect"])
         self.mouse_px = float(rc["mouse_px_per_screen"])
+        # Movement units for one screen width / height, for the relative outputs.
+        if self.rel_output == "trackball":
+            self.rel_counts = (float(rc["trackball_counts"][0]), float(rc["trackball_counts"][1]))
+        else:  # mouse: pixels; the screen height is the width / aspect ratio
+            self.rel_counts = (self.mouse_px, self.mouse_px / max(self.screen_aspect, 1e-6))
+        # Relative outputs can't know where the real pointer is, so they keep a virtual
+        # cursor (sum of their own movements, unbounded): enough to measure and undo
+        # movement between the two pinches of a double click.
+        self._vcur = [0.0, 0.0]
         cam = cfg["camera"]
         self.frame_aspect = float(cam["height"]) / max(float(cam["width"]), 1.0)  # h / w
         self._prev_t = 0.0
@@ -252,6 +264,11 @@ class GestureController:
         self._events: list[str] = []
 
     # -- public ---------------------------------------------------------------
+    def tick(self) -> None:
+        """Time-based housekeeping; also call this when no camera frame arrived."""
+        if self.touchpad is not None:
+            self.touchpad.tick()
+
     def toggle_pause(self) -> None:
         self.paused = not self.paused
         self._stop_fling()
@@ -260,15 +277,18 @@ class GestureController:
 
     def update(self, feats: HandFeatures | None, anchor: tuple[float, float] | None,
                t: float, palm: float | None = None,
-               zoom: tuple[bool, float] | None = None) -> Status:
+               zoom: tuple[bool, float] | None = None, rebase: bool = False) -> Status:
         """palm: palm length (wrist to middle knuckle) in camera-frame widths. Relative
         mode measures hand movement in palm lengths, so it feels the same at any
         distance from the camera.
         zoom: (both hands pointing, index-tip spread in palm lengths) when two hands are
-        visible, else None."""
+        visible, else None.
+        rebase: the tracked hand switched (or jumped impossibly far) this frame: don't
+        turn the jump into cursor or scroll movement, and disarm pinches."""
         st = Status(paused=self.paused)
         self._events = []
         prev_t, self._last_t = self._last_t, t
+        self.tick()
         # Catch a glide on the very first frame of the peace sign, like touching the glass.
         # Its speed is remembered: a quick swipe the same way adds it to the next fling.
         if self._fling_v and feats is not None and feats.pose == TWO and not self.paused:
@@ -291,6 +311,8 @@ class GestureController:
             return self._status(st)
 
         self._lost = 0
+        if rebase:
+            self._rebase()
         st.hand = True
         st.raw_pose = feats.pose
         pose = self.pose.update(feats.pose)
@@ -319,7 +341,9 @@ class GestureController:
 
         # Two-hand zoom takes priority over every one-hand gesture.
         if self.zoom_enabled:
-            both = zoom is not None and zoom[0]
+            # Never start a zoom in the middle of a drag: it would drop what's being dragged.
+            dragging = self.pointer.is_down("left") and self.mode != Mode.ZOOM
+            both = zoom is not None and zoom[0] and not dragging
             st.zoom_hands = both
             zooming = self.zoom_debounce.update("zoom" if both else NONE) == "zoom"
             if zooming and zoom is not None:
@@ -452,21 +476,53 @@ class GestureController:
         self.left.reset()
         self.right.reset()
 
+    def _rebase(self) -> None:
+        """Forget motion history, as if the hand had just appeared, without changing
+        mode. A drag in progress keeps its button (and its pinch) so it isn't dropped."""
+        self.cursor_filter.reset()
+        self.rel_filter.reset()
+        self.scroll_filter.reset()
+        self._prev_mapped = None
+        self._last_sent = None
+        self._rel_rem = [0.0, 0.0]
+        self._scroll_prev = None
+        self._scroll_hist.clear()
+        if not self.pointer.is_down("left"):
+            self.left.reset()
+        self.right.reset()
+        self._act("hand switch", quiet=True)
+
+    def _move_rel_screen(self, dx: float, dy: float) -> None:
+        """Move by dx screen widths and dy screen heights with relative events."""
+        px = dx * self.rel_counts[0] + self._rel_rem[0]
+        py = dy * self.rel_counts[1] + self._rel_rem[1]
+        ix, iy = int(px), int(py)
+        self._rel_rem = [px - ix, py - iy]
+        self._vcur[0] += dx
+        self._vcur[1] += dy
+        self.pointer.move_rel(ix, iy)
+
     def _cursor_pos(self) -> tuple[float, float] | None:
-        """Current cursor position as a screen fraction, if this mode knows it."""
+        """Cursor position as a screen fraction: real for the absolute outputs, virtual
+        (relative to an arbitrary origin) for the relative ones."""
         if self.abs_mode:
             return self._last_sent
         if self.rel_output == "tablet":
             return (self._cursor[0], self._cursor[1])
-        return None  # plain relative mouse events: position unknown
+        return (self._vcur[0], self._vcur[1])
 
     def _place(self, pos: tuple[float, float]) -> None:
-        """Put the cursor at a screen fraction (tablet/absolute output only)."""
-        self.pointer.move_abs(pos[0] * self.abs_scale[0], pos[1] * self.abs_scale[1])
+        """Put the cursor at a screen fraction (for relative outputs: undo the movement
+        since the virtual cursor was at pos)."""
         if self.abs_mode:
+            self.pointer.move_abs(pos[0] * self.abs_scale[0], pos[1] * self.abs_scale[1])
             self._last_sent = pos
-        else:
+        elif self.rel_output == "tablet":
+            self.pointer.move_abs(pos[0] * self.abs_scale[0], pos[1] * self.abs_scale[1])
             self._cursor = [pos[0], pos[1]]
+        else:
+            self._rel_rem = [0.0, 0.0]
+            self._move_rel_screen(pos[0] - self._vcur[0], pos[1] - self._vcur[1])
 
     def _left_press(self, t: float) -> None:
         """Start a left press. A second pinch soon after the previous click, near the
@@ -561,13 +617,9 @@ class GestureController:
         dx = dxp * gain                       # screen widths
         dy = dyp * gain * self.screen_aspect  # screen heights (same distance in pixels)
 
-        if self.rel_output == "mouse":
-            # Plain relative mouse events (GNOME's acceleration applies on top).
-            px = dx * self.mouse_px + self._rel_rem[0]
-            py = dy * self.mouse_px + self._rel_rem[1]
-            ix, iy = int(px), int(py)
-            self._rel_rem = [px - ix, py - iy]
-            self.pointer.move_rel(ix, iy)
+        if self.rel_output in ("mouse", "trackball"):
+            # Relative events: the cursor moves from wherever the real pointer is.
+            self._move_rel_screen(dx, dy)
             return
 
         cx = min(max(self._cursor[0] + dx, 0.0), 1.0)
@@ -732,15 +784,16 @@ class GestureController:
                 self._act("zoom unavailable: touchpad is off")
             return
         self._blocked_said = False
-        if not tp.is_down:
+        if self._tp_ref is None:
+            # New pinch (or the previous one resuming before its fingers lifted).
+            self._tp_base = tp.begin(self.tp_start_mm)
             self._tp_ref = x
-            tp.begin(self.tp_start_mm)
             return
-        sep = self.tp_start_mm * math.exp((x - self._tp_ref) * self.tp_gain)
-        if sep > tp.max_sep or sep < tp.min_sep:
+        sep = self._tp_base * math.exp((x - self._tp_ref) * self.tp_gain * self.zoom_sign)
+        if (sep > tp.max_sep or sep < tp.min_sep) and tp.contact_age >= tpm.MIN_CONTACT_S:
             tp.end()                       # re-grip: lift and land again at the start
+            self._tp_base = tp.begin(self.tp_start_mm)
             self._tp_ref = x
-            tp.begin(self.tp_start_mm)
             return
         if abs(sep - tp.separation) >= 0.05:
             zoom_in = sep > tp.separation

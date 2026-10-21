@@ -21,6 +21,43 @@ towards each edge; press Enter the moment it touches. The result is saved to
 monitors, and delete that file to undo it. `--pointer-test` then visits all four screen
 corners so you can check the result.
 
+### Using your mouse and gestures together (optional, one-time setup)
+
+By default, gestures drive a virtual tablet that puts the cursor at positions the app
+keeps track of itself. Wayland doesn't let apps read where the real pointer is, so after
+you move your real mouse or touchpad, the next gesture makes the cursor jump back to
+where gestures last left it.
+
+The fix is the **trackball output**: the app sends movement (like a mouse) instead of
+positions, so gestures continue from wherever the pointer is. GNOME would normally add
+mouse acceleration on top of the app's own, which makes gestures unpredictable, so a
+udev rule marks the app's device as a trackball and GNOME's trackball acceleration is set
+to flat. Your real mouse and touchpad keep their own settings. Run these once:
+
+```bash
+echo 'ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="gesture-control trackball", ENV{ID_INPUT_TRACKBALL}="1"' | sudo tee /etc/udev/rules.d/99-gesture-control.rules
+sudo udevadm control --reload-rules
+gsettings set org.gnome.desktop.peripherals.trackball accel-profile flat
+uv run gesture-control --calibrate-trackball
+```
+
+`--calibrate-trackball` works like `--calibrate`: the cursor moves slowly towards the
+right edge, then the top edge; press Enter the moment it touches (twice per edge: a
+quick pass, then a slow one). The result goes to `config/calibration.yaml`.
+
+After that, the app uses the trackball output automatically (`cursor.relative.output:
+auto`); the startup line says `cursor: relative (trackball)`. Until then it uses the
+tablet and prints a one-line tip about this section. Notes:
+
+- Re-run `--calibrate-trackball` after changing display scaling, resolution or GNOME's
+  mouse speed (Settings > Mouse & Touchpad > Mouse Pointer Speed also applies to
+  trackballs; the app warns at startup if it changed).
+- If you own a real trackball, it also gets flat acceleration.
+- To undo: `sudo rm /etc/udev/rules.d/99-gesture-control.rules`,
+  `gsettings reset org.gnome.desktop.peripherals.trackball accel-profile`, and the app
+  goes back to the tablet.
+- Absolute mode always uses the tablet (it needs positions).
+
 To change any behaviour, see [Configuration](#configuration).
 
 Useful options:
@@ -30,14 +67,21 @@ Useful options:
 | `--dry-run` | Track and recognize gestures, but print actions instead of moving the mouse |
 | `--mode absolute` | Hand position = screen position (the default is relative, touchpad-like) |
 | `--calibrate` | Find the screen edges for absolute mode, then exit |
+| `--calibrate-trackball` | Measure the trackball output (after its [one-time setup](#using-your-mouse-and-gestures-together-optional-one-time-setup)), then exit |
 | `--zoom-test` | Zoom in, then out, under the mouse pointer (a real touchpad pinch by default; no camera), then exit |
 | `--start-paused` | Start paused; hold a fist ~1 s to begin |
-| `--no-preview` | Run without the camera window (Ctrl+C to quit) |
+| `--no-preview` | Run without the camera window (Ctrl+C, or `kill`, to quit) |
 | `-v` | Print every action to the terminal |
 | `--camera N` | Use `/dev/videoN` |
 | `--config PATH` | Use another config file |
 
-In the preview window: `q` / `Esc` quits, `p` toggles pause.
+In the preview window: `q` / `Esc` quits, `p` toggles pause. The app also shuts down
+cleanly (buttons and virtual fingers released, camera settings put back) when it's
+stopped with Ctrl+C, `kill`, or by closing its terminal.
+
+The app adjusts one camera setting while it runs (it stops auto-exposure from lowering
+the frame rate in dim light) and puts it back when it exits, so video calls aren't
+affected afterwards.
 
 ## Gestures
 
@@ -67,7 +111,13 @@ Scrolling works like a phone. See [Scrolling, step by step](#scrolling-step-by-s
 In absolute mode (`--mode absolute`) your hand position maps directly to the screen:
 only the rectangle drawn in the preview maps to the screen.
 
-Both modes drive the calibrated virtual tablet, so run `--calibrate` once either way.
+Both modes drive the calibrated virtual tablet by default, so run `--calibrate` once
+either way. (With the [trackball output](#using-your-mouse-and-gestures-together-optional-one-time-setup),
+relative mode doesn't need `--calibrate`.)
+
+If you use both hands (one at a time), the app follows the hand that was already
+moving the cursor. When it has to switch to the other hand, the cursor stays where it
+is instead of jumping, and a drag in progress continues.
 
 ## Scrolling, step by step
 
@@ -172,7 +222,12 @@ a laptop touchpad.
   settings apply to the virtual touchpad too. If the touchpad is off, or set to turn off
   while a mouse is connected (this app's virtual pointer counts as a mouse), the app
   says so at startup and in the preview, and doesn't zoom. It doesn't switch to Ctrl +
-  wheel on its own.
+  wheel on its own. With the turn-off-with-a-mouse setting, your **laptop's own
+  touchpad** also stops working while the app runs; the app warns about that at startup
+  whatever zoom method you use.
+- `zoom.invert: true` swaps the directions (apart = zoom out) for every method.
+- While you're dragging (left pinch held), a second pointing hand doesn't start a zoom,
+  so the drag isn't cut short.
 - Clicks, cursor movement and scrolling pause while both hands point. The virtual
   fingers are lifted as soon as a hand drops, leaves the view, or the app stops.
 - Keep a little space between your hands: if they touch, the tracker may see them as one
@@ -266,7 +321,13 @@ If something is wrong, the app tells you at startup:
 ```
 Config error: local.yaml (line 3, column 11): mapping values are not allowed here. ...
 Config warning: local.yaml: unknown setting 'pinch.strat' (typo?) - ignored
+Config error: pinch.release (0.3) must be larger than pinch.start (0.4); otherwise a resting thumb clicks over and over
 ```
+
+Values that would make the app misbehave (not just feel different) are refused this way:
+negative or zero speeds and gains, `pinch.release` not above `pinch.start`,
+`pose.extend_ratio` not above `curl_ratio`, frame counts below 1, and a cursor region
+outside 0..1.
 
 When `config/local.yaml` loads, the startup line `Also loaded: config/local.yaml`
 confirms it. `uv run gesture-control --dry-run` is a safe way to try changes: everything
@@ -366,8 +427,10 @@ from `speed_slow` to `speed_fast`:
 | `speed_fast` | `5.0` | Hand speed at or above which `gain_fast` applies |
 | `min_speed` | `0.15` | Slower than this counts as holding still: hides tracking jitter. Raise it if the cursor creeps |
 | `screen_aspect` | `1.6` | Screen width ÷ height (1.6 for 16:10, 1.78 for 16:9), so vertical and horizontal movement match |
-| `output` | `tablet` | `tablet`: uses the calibrated virtual tablet (recommended). `mouse`: plain mouse events, with GNOME's mouse acceleration added on top |
-| `mouse_px_per_screen` | `1920` | Only for `output: mouse`: movement units per screen width |
+| `output` | `auto` | `auto`: the trackball output once its [one-time setup](#using-your-mouse-and-gestures-together-optional-one-time-setup) is done, otherwise the tablet. `trackball`: always (exits with the setup steps if they're missing). `tablet`: the calibrated virtual tablet; the cursor jumps back after you use your real mouse. `mouse`: plain mouse events, with GNOME's mouse acceleration added on top |
+| `trackball_counts` | `[0, 0]` | Written by `--calibrate-trackball`: movement units for one screen width and height. Don't set it by hand |
+| `trackball_mouse_speed` | `null` | Written by `--calibrate-trackball`: GNOME's mouse speed at calibration, to warn when it changes |
+| `mouse_px_per_screen` | `1920` | Only for `output: mouse`: movement units per screen width (the height uses `screen_aspect`) |
 | `filter.min_cutoff` | `1.0` | Smoothing when still. Lower = steadier, but more lag |
 | `filter.beta` | `4.0` | Smoothing when moving. Higher = less lag on fast moves, but more jitter |
 | `filter.d_cutoff` | `1.0` | Smoothing of the speed estimate; rarely needs changing |
@@ -471,10 +534,12 @@ docs/scroll/                  scrolling pictures and animations (README)
 docs/zoom/                    zoom picture (README)
 config/gestures.yaml          settings (overwritten by new builds)
 config/local.yaml             your overrides (optional, never overwritten)
-config/calibration.yaml       written by --calibrate
+config/calibration.yaml       written by --calibrate and --calibrate-trackball
 src/gesture_control/
   app.py          main loop and CLI
   calibrate.py    screen-edge calibration (--calibrate)
+  trackball.py    trackball output setup checks and --calibrate-trackball
+  touchpad.py     virtual touchpad for the two-hand pinch
   capture.py      threaded camera reader (newest frame only)
   tracker.py      MediaPipe Hand Landmarker wrapper
   features.py     finger states, pinch distances, pose classification

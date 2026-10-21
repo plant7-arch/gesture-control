@@ -14,19 +14,20 @@ Touchpad details that matter here (from libinput's touchpad gesture code):
   * Contacts in the outer 8% of the width (palm) or below 85% of the height (thumb)
     may be ignored, so the fingers stay inside those lines.
   * With tap-to-click on, a quick two-finger touch is a right click, so the fingers
-    always stay down for at least MIN_CONTACT_S.
+    always stay down for at least MIN_CONTACT_S. A lift requested sooner is scheduled
+    (see tick()), never waited for, so the app doesn't freeze.
   * GNOME's touchpad settings apply to this device too (see TouchpadSettings).
 """
 
 from __future__ import annotations
 
+import math
 import shutil
 import subprocess
 import threading
 import time
 
-import math
-
+_now = time.monotonic  # the clock (tests replace it)
 MIN_CONTACT_S = 0.25  # longer than libinput's tap timeout (~180 ms)
 ANGLE_DEG = 30.0      # finger diagonal: 30 degrees above horizontal
 MIN_DY_MM = 8.0       # libinput's scroll box is < 7 mm vertically
@@ -46,6 +47,7 @@ class VirtualTouchpad:
         self._down_t = 0.0
         self._tracking_id = 0
         self._sep = 0.0
+        self._lift_at: float | None = None  # scheduled lift time (monotonic)
         self.events: list[tuple[str, float]] = []  # dry-run record: ("down"/"move"/"up", sep)
         if dry_run:
             return
@@ -127,21 +129,25 @@ class VirtualTouchpad:
         self._w(e.EV_ABS, e.ABS_Y, y0)
         self._ui.syn()
 
-    def begin(self, sep: float) -> None:
-        """Put two fingers down, sep mm apart."""
+    def begin(self, sep: float) -> float:
+        """Put two fingers down, sep mm apart. Returns the separation the pinch starts
+        from: if a lift was only scheduled (the previous pinch ended moments ago), the
+        same contact simply continues from where the fingers are."""
         if self._down:
-            return
+            self._lift_at = None
+            return self._sep
         sep = min(max(sep, self.min_sep), self.max_sep)
-        self._down, self._down_t, self._sep = True, time.monotonic(), sep
+        self._down, self._down_t, self._sep = True, _now(), sep
         self.events.append(("down", sep))
         if self.dry_run:
             print(f"[touchpad] 2 fingers down, {sep:.1f} mm apart")
-            return
+            return sep
         self._write_fingers(sep, new_contact=True)
+        return sep
 
     def move(self, sep: float) -> None:
         """Move the two fingers to sep mm apart (symmetric about the centre)."""
-        if not self._down:
+        if not self._down or self._lift_at is not None:
             return
         sep = min(max(sep, self.min_sep), self.max_sep)
         if abs(sep - self._sep) < 1.0 / self.res:
@@ -153,13 +159,35 @@ class VirtualTouchpad:
             return
         self._write_fingers(sep, new_contact=False)
 
-    def end(self) -> None:
-        """Lift both fingers (after at least MIN_CONTACT_S, so it is never a tap)."""
+    @property
+    def contact_age(self) -> float:
+        return _now() - self._down_t if self._down else 0.0
+
+    @property
+    def lift_pending(self) -> bool:
+        return self._lift_at is not None
+
+    def end(self, wait: bool = False) -> None:
+        """Lift both fingers. A contact younger than MIN_CONTACT_S could be read as a
+        tap (right click), so its lift is scheduled for later (tick() performs it)
+        unless wait=True, which sleeps instead (only for shutdown and tests)."""
         if not self._down:
             return
-        wait = MIN_CONTACT_S - (time.monotonic() - self._down_t)
-        if wait > 0:
-            time.sleep(wait)
+        remaining = MIN_CONTACT_S - (_now() - self._down_t)
+        if remaining > 0:
+            if not wait:
+                self._lift_at = self._down_t + MIN_CONTACT_S
+                return
+            time.sleep(remaining)
+        self._lift_now()
+
+    def tick(self) -> None:
+        """Perform a scheduled lift once its time has come. Call this every frame."""
+        if self._lift_at is not None and _now() >= self._lift_at:
+            self._lift_now()
+
+    def _lift_now(self) -> None:
+        self._lift_at = None
         self._down = False
         self.events.append(("up", self._sep))
         if self.dry_run:
@@ -182,7 +210,7 @@ class VirtualTouchpad:
         return self._sep
 
     def close(self) -> None:
-        self.end()
+        self.end(wait=True)
         if self._ui is not None:
             self._ui.close()
             self._ui = None
@@ -234,12 +262,20 @@ class TouchpadSettings:
                     "Turn it on to zoom with the two-hand pinch, or set zoom.method: "
                     "ctrl_scroll in config/local.yaml.")
         if self.state == "disabled-on-external-mouse":
-            return ("Zoom is off: the touchpad is set to turn off while a mouse is connected, "
-                    "and this app's virtual pointer counts as a mouse. Allow the touchpad "
-                    "with a mouse connected (gsettings set org.gnome.desktop.peripherals."
-                    "touchpad send-events enabled), or set zoom.method: ctrl_scroll in "
+            return ("Zoom is off, and so is your laptop touchpad while this app runs: the "
+                    "touchpad is set to turn off while a mouse is connected, and this app's "
+                    "virtual pointer counts as a mouse. Allow the touchpad with a mouse "
+                    "connected (gsettings set org.gnome.desktop.peripherals.touchpad "
+                    "send-events enabled), or set zoom.method: ctrl_scroll in "
                     "config/local.yaml.")
         return ""
 
     def stop(self) -> None:
         self._stop.set()
+
+    @staticmethod
+    def mouse_note() -> str:
+        return ("Note: your laptop touchpad is off while this app runs. It's set to turn off "
+                "while a mouse is connected, and this app's virtual pointer counts as a "
+                "mouse. To keep it on: gsettings set org.gnome.desktop.peripherals.touchpad "
+                "send-events enabled")

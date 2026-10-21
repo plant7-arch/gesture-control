@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
 import time
 
@@ -35,6 +36,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "default; no camera), then exit")
     p.add_argument("--calibrate", action="store_true",
                    help="find where the screen edges are (absolute mode), then exit")
+    p.add_argument("--calibrate-trackball", action="store_true",
+                   help="measure the trackball output (after its one-time setup), then exit")
     p.add_argument("-v", "--verbose", action="store_true", help="print every action")
     return p.parse_args(argv)
 
@@ -164,6 +167,65 @@ def zoom_test(cfg, dry_run: bool) -> None:
         ptr.close()
 
 
+# A hand can't really move this far between two frames (about 4 m/s at 30 fps); a jump
+# like this is the tracker switching hands or glitching, not movement.
+MAX_JUMP_PALMS = 1.5
+
+
+def _is_switch(anchor, prev_anchor, prev_other, palm) -> bool:
+    """Did the primary hand change identity (or jump impossibly far) since last frame?"""
+    if anchor is None or prev_anchor is None:
+        return False
+    d_prev = ((anchor[0] - prev_anchor[0]) ** 2 + (anchor[1] - prev_anchor[1]) ** 2) ** 0.5
+    if prev_other is not None:
+        d_other = ((anchor[0] - prev_other[0]) ** 2 + (anchor[1] - prev_other[1]) ** 2) ** 0.5
+        if d_other < d_prev:
+            return True  # we're now following the hand that used to be the other one
+    return palm is not None and palm > 1e-4 and d_prev / palm > MAX_JUMP_PALMS
+
+
+def _resolve_output(cfg, dry_run: bool):
+    """Settle cursor.relative.output ("auto" -> trackball or tablet). Returns the
+    trackball pointer if that's what will be used (already created and verified)."""
+    from . import trackball as tb
+
+    rc = cfg["cursor"]["relative"]
+    want = rc["output"]
+    if cfg["cursor"]["mode"] != "relative" or want not in ("auto", "trackball"):
+        if want == "auto":
+            rc["output"] = "tablet"
+        return None
+    missing = tb.missing_steps(cfg)
+    ptr = None
+    if not missing:
+        try:
+            ptr = VirtualPointer(mode="relative", dry_run=dry_run, name=tb.DEVICE_NAME)
+        except PermissionError:
+            sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
+        if not dry_run and not tb.device_tagged(ptr.device_path):
+            ptr.close()
+            ptr = None
+            missing = [("udev didn't tag the virtual trackball "
+                        "(run: sudo udevadm control --reload-rules)")]
+    if missing:
+        if want == "trackball":
+            sys.exit("cursor.relative.output is trackball, but its setup isn't complete:\n"
+                     + "".join(f"  - {m}\n" for m in missing)
+                     + "Run these once:\n" + tb.SETUP_COMMANDS)
+        rc["output"] = "tablet"
+        print("Tip: the cursor jumps back after you use your real mouse or touchpad. A "
+              "one-time setup fixes that: README > Using your mouse and gestures together "
+              "(or set cursor.relative.output: tablet to hide this tip).")
+        return None
+    rc["output"] = "trackball"
+    saved, now = rc.get("trackball_mouse_speed"), tb.mouse_speed()
+    if saved is not None and now is not None and abs(float(saved) - now) > 1e-6:
+        print("Note: GNOME's mouse speed changed since the trackball calibration, so "
+              "gestures move the cursor a different distance. Re-run: "
+              "uv run gesture-control --calibrate-trackball")
+    return ptr
+
+
 def _pick_primary(hands, prev_anchor, anchor_name):
     """The hand that drives one-hand gestures: the one nearest to where the previous
     primary hand was, so a second hand coming into view doesn't steal the cursor."""
@@ -201,6 +263,11 @@ def main(argv=None) -> None:
 
         run_calibration(args.dry_run, args.config)
         return
+    if args.calibrate_trackball:
+        from .trackball import run_calibration as run_trackball_calibration
+
+        run_trackball_calibration(cfg, args.dry_run, args.config)
+        return
     if args.zoom_test:
         zoom_test(cfg, args.dry_run)
         return
@@ -220,30 +287,50 @@ def main(argv=None) -> None:
     # Heavy imports after argument handling so --help and --pointer-test stay fast.
     from .capture import Camera
     from .controller import GestureController
-    from .features import POINT, anchor_point, compute_features, hand_spread, palm_length
+    from .features import (
+        POINT,
+        anchor_point,
+        compute_features,
+        hand_spread,
+        palm_length,
+    )
     from .tracker import HandTracker, feature_points
 
+    pointer = _resolve_output(cfg, args.dry_run)
     device = pointer_device_mode(cfg)
-    pointer = _make_pointer(device, args.dry_run)
+    if pointer is None:
+        pointer = _make_pointer(device, args.dry_run)
     zoom_on = bool(cfg["zoom"]["enabled"])
     method = cfg["zoom"]["method"]
     keys = _make_keys(args.dry_run) if zoom_on and method != "touchpad" else None
     touchpad = tp_settings = None
-    if zoom_on and method == "touchpad":
-        from .touchpad import TouchpadSettings
+    from .touchpad import TouchpadSettings
 
+    if zoom_on and method == "touchpad":
         touchpad = _make_touchpad(cfg, args.dry_run)
         tp_settings = TouchpadSettings()
         if not tp_settings.usable:
             print(tp_settings.message())
+    elif TouchpadSettings.read() == "disabled-on-external-mouse":
+        print(TouchpadSettings.mouse_note())
+
+    def _stop_on_signal(signum, _frame):
+        # Closing the terminal (SIGHUP) or `kill` (SIGTERM): shut down cleanly like
+        # Ctrl+C, so held keys/buttons/fingers are released and the camera restored.
+        raise KeyboardInterrupt
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _stop_on_signal)
     camera = Camera(cfg["camera"])
     tracker = None
     overlay = None
     try:
         camera.start()
         w, h, fps_set = camera.actual
+        out_name = (cfg["cursor"]["mode"] if cfg["cursor"]["mode"] == "absolute"
+                    else f"relative ({cfg['cursor']['relative']['output']})")
         print(f"Camera /dev/video{camera.index}: {w}x{h} @ {fps_set:.0f} fps | "
-              f"cursor: {cfg['cursor']['mode']} | {'DRY RUN' if args.dry_run else 'live'}")
+              f"cursor: {out_name} | {'DRY RUN' if args.dry_run else 'live'}")
         if cfg["_loaded"]:
             print("Also loaded: " + ", ".join(f"config/{n}" for n in cfg["_loaded"]))
         if device == "absolute" and "calibration.yaml" not in cfg["_loaded"]:
@@ -265,12 +352,13 @@ def main(argv=None) -> None:
         anchor_name = cfg["cursor"]["anchor"]
         mirror = bool(cfg["camera"]["mirror"])
         seq, fps, t_fps, n_fps = 0, 0.0, time.monotonic(), 0
-        prev_anchor = None
+        prev_anchor = prev_other = None
         stall_since = None
 
         while True:
             item = camera.read(seq, timeout=1.0)
             if item is None:
+                controller.tick()  # e.g. a scheduled finger lift
                 stall_since = stall_since or time.monotonic()
                 if time.monotonic() - stall_since > 5:
                     print("No frames from the camera for 5 s - is another app using it?")
@@ -290,18 +378,21 @@ def main(argv=None) -> None:
             hand = _pick_primary(hands, prev_anchor, anchor_name)
             other = next((h for h in hands if h is not hand), None)
             feats = anchor = palm = zoom_in = None
+            switched = False
             fh, fw = frame.shape[:2]
             if hand is not None:
                 feats = compute_features(feature_points(hand, fw, fh), ext, curl)
                 anchor = anchor_point(hand.image, anchor_name)
                 palm = palm_length(hand.image, fw, fh)
+                switched = _is_switch(anchor, prev_anchor, prev_other, palm)
                 prev_anchor = anchor
+            prev_other = anchor_point(other.image, anchor_name) if other is not None else None
             if hand is not None and other is not None:
                 other_feats = compute_features(feature_points(other, fw, fh), ext, curl)
                 both_point = feats.pose == POINT and other_feats.pose == POINT
                 zoom_in = (both_point, hand_spread(hand.image, other.image, fw, fh))
             now = time.monotonic()
-            status = controller.update(feats, anchor, now, palm, zoom_in)
+            status = controller.update(feats, anchor, now, palm, zoom_in, rebase=switched)
             latency_ms = (time.monotonic() - cap_ts) * 1000
 
             n_fps += 1

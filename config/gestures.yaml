@@ -72,9 +72,14 @@ cursor:
     speed_fast: 5.0
     min_speed: 0.15     # slower than this counts as holding still (hides jitter)
     screen_aspect: 1.6  # screen width / height (1.6 for 16:10, 1.78 for 16:9)
-    output: tablet      # tablet: drive the calibrated absolute device (no GNOME
-                        #   acceleration on top; uses --calibrate) | mouse: plain
-                        #   relative mouse events (GNOME acceleration applies)
+    output: auto        # auto: trackball once its one-time setup is done, else tablet
+                        # trackball: relative movement from wherever the real pointer is
+                        #   (works alongside your mouse/touchpad; README > one-time setup)
+                        # tablet: absolute positions the app keeps itself (no setup, but
+                        #   the cursor jumps back after you use your real mouse)
+                        # mouse: plain relative mouse events (GNOME acceleration applies)
+    trackball_counts: [0, 0]     # set by --calibrate-trackball (in calibration.yaml)
+    trackball_mouse_speed: null  # GNOME mouse speed at calibration time
     mouse_px_per_screen: 1920  # output: mouse only - counts per screen width
     filter:             # One Euro filter
       min_cutoff: 1.0   # lower = steadier when still, but more lag

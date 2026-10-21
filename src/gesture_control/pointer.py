@@ -47,6 +47,12 @@ class VirtualPointer:
         self._ui = UInput(caps, name=name, vendor=0x1209, product=0x6763)
         time.sleep(0.5)  # let the compositor pick up the new device
 
+    @property
+    def device_path(self) -> str | None:
+        """The /dev/input/eventN node of the virtual device (None in dry-run)."""
+        dev = getattr(self._ui, "device", None)
+        return getattr(dev, "path", None)
+
     # -- motion -------------------------------------------------------------
     def move_abs(self, nx: float, ny: float) -> None:
         """Move to a normalized screen position (0..1, 0..1)."""
