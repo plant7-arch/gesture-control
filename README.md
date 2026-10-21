@@ -59,16 +59,73 @@ again. Movement is measured in palm lengths, so it feels the same at any distanc
 the camera, and tracking follows the centre of your knuckles (the big dot), which stays
 put when you pinch.
 
-Scrolling works like a phone: the peace sign is your finger on the glass. Move your hand
-up and the page moves up with it. To fling, swipe and leave the pose while your hand is
-still moving (open your palm or curl the two fingers): that's lifting your finger, and
-the page keeps gliding and slows to a stop. Make the peace sign again to catch it. If you
-stop your hand before leaving the pose, there's no glide, just like a phone.
+Scrolling works like a phone. See [Scrolling, step by step](#scrolling-step-by-step).
 
 In absolute mode (`--mode absolute`) your hand position maps directly to the screen:
 only the rectangle drawn in the preview maps to the screen.
 
 Both modes drive the calibrated virtual tablet, so run `--calibrate` once either way.
+
+## Scrolling, step by step
+
+Think of the camera view as a phone screen. The **peace sign** puts your finger on the
+glass; an **open palm** lifts it off.
+
+![Peace sign = finger on the glass; open palm = finger lifted](docs/scroll/poses.png)
+
+**Hand up, page up:** the page sticks to your fingers, so raising your hand moves the
+content up and shows what's further down (the opposite of a mouse wheel).
+
+The animations below were rendered by feeding hand movements into the app's own scroll
+code, so the timing and glide match the real app. Left: the camera view. Right: the page.
+
+### 1. Drag: slow, precise scrolling
+
+![Drag](docs/scroll/1-drag.gif)
+
+1. Make a peace sign and hold it still for a moment (about a third of a second).
+2. Move your hand up: the page moves up with it. Move down: it comes back.
+3. Stop your hand and the page stops. Open your palm to let go.
+
+### 2. Fling: cover a long distance fast
+
+![Fling](docs/scroll/2-fling.gif)
+
+1. Start with the peace sign low in the camera view.
+2. Swipe up quickly and, **while your hand is still moving**, open your palm.
+3. The page keeps gliding at your swipe speed and slows to a stop on its own.
+
+### 3. Catch: stop a glide where you want
+
+![Catch](docs/scroll/3-catch.gif)
+
+While the page glides, make the peace sign again: it stops on the spot. A click or a
+fist (pause) also stops it.
+
+### 4. Let go without a glide: scroll an exact amount
+
+![No glide](docs/scroll/4-no-glide.gif)
+
+Swipe, **stop your hand** while still in the peace sign, then open your palm. Your hand
+wasn't moving when you let go, so the page stays exactly where you put it.
+
+### 5. Scroll far: when you run out of room
+
+![Scroll far](docs/scroll/5-long-scroll.gif)
+
+Drag up, open your palm and bring your hand back down (nothing scrolls back, because
+your finger is off the glass), then make the peace sign and drag up again. Repeat, as
+you would on a phone.
+
+### If scrolling doesn't behave
+
+| Problem | Fix |
+|---|---|
+| Nothing scrolls when I start moving | Hold the peace sign still for a moment first. The preview's top-left label must say SCROLL; if it says IDLE, keep the ring and little finger curled |
+| It scrolls the wrong way for me | `scroll:` `direction: traditional` in `config/local.yaml` |
+| It glides when I don't want | Stop your hand before opening your palm, raise `fling.min_speed`, or set `fling.enabled: false` |
+| It never glides | Open your palm during the swipe, not after it; or lower `fling.min_speed` to `0.6` |
+| Glide too short / too long | `fling.time_constant_s: 0.7` (longer) or `0.3` (shorter) |
 
 ## Configuration
 
@@ -297,6 +354,7 @@ The preview shows live values that help you choose settings:
 ## Layout
 
 ```
+docs/scroll/                  scrolling pictures and animations (README)
 config/gestures.yaml          settings (overwritten by new builds)
 config/local.yaml             your overrides (optional, never overwritten)
 config/calibration.yaml       written by --calibrate
