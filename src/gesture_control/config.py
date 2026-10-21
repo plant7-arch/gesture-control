@@ -164,6 +164,62 @@ def _unknown_keys(data: dict[str, Any], ref: dict[str, Any], prefix: str = "") -
     return out
 
 
+def _check_sections(data: dict[str, Any], ref: dict[str, Any], fname: str,
+                    warnings: list[str], prefix: str = "") -> None:
+    """Sections (settings that hold other settings) must be mappings.
+
+    A section with nothing under it (`pinch:` with every line below commented out)
+    reads as null: it's dropped with a warning, so the defaults stay. Anything else
+    in place of a section (`cursor: 5`, a list) is an error."""
+    for key in list(data):
+        value, default = data[key], ref.get(key)
+        if not isinstance(default, dict):
+            continue
+        name = f"{prefix}{key}"
+        if value is None:
+            del data[key]
+            warnings.append(f"{fname}: '{name}' has no settings under it - ignored")
+        elif not isinstance(value, dict):
+            raise ValueError(f"{fname}: '{name}' must be a section with settings indented "
+                             f"under it (got {value!r})")
+        else:
+            _check_sections(value, default, fname, warnings, name + ".")
+
+
+# Settings that take the word "auto" or a number.
+AUTO_OR_NUMBER = {"cursor.relative.screen_aspect", "double_click.os_time_ms"}
+
+
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _check_types(cfg: dict[str, Any], ref: dict[str, Any] = DEFAULTS, prefix: str = "") -> None:
+    """Each setting must have the kind of value its default has. Without this, a
+    quoted "false" would count as true and a quoted "0.2" would crash a comparison.
+    Lists and choice words have their own checks in load_config."""
+    for key, default in ref.items():
+        name, value = f"{prefix}{key}", cfg[key]
+        if isinstance(default, dict):
+            _check_types(value, default, name + ".")
+        elif name in AUTO_OR_NUMBER:
+            if value != "auto" and not _is_number(value):
+                raise ValueError(f"{name} must be auto or a number (got {value!r})")
+        elif default is None:  # optional number, e.g. trackball_mouse_speed
+            if value is not None and not _is_number(value):
+                raise ValueError(f"{name} must be a number or null (got {value!r})")
+        elif isinstance(default, bool):
+            if not isinstance(value, bool):
+                raise ValueError(f"{name} must be true or false, without quotes "
+                                 f"(got {value!r})")
+        elif _is_number(default):
+            if not _is_number(value):
+                raise ValueError(f"{name} must be a number (got {value!r})")
+        elif isinstance(default, str):
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be a word or text (got {value!r})")
+
+
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
     """Load DEFAULTS, then gestures.yaml, then calibration.yaml and local.yaml
     from the same folder (if present). Missing keys fall back to defaults."""
@@ -183,6 +239,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
             loaded.append(name)
     for f in files:
         data = _read_yaml(f)
+        _check_sections(data, DEFAULTS, f.name, warnings)
         sc = data.get("scroll")
         fl = sc.get("fling") if isinstance(sc, dict) else None
         if isinstance(fl, dict) and "lift_frames" in fl:  # no longer used
@@ -200,6 +257,7 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     cfg["_loaded"] = loaded
     cfg["_warnings"] = warnings
 
+    _check_types(cfg)
     model = Path(cfg["tracker"]["model"]).expanduser()
     if not model.is_absolute():
         model = PROJECT_ROOT / model
@@ -274,6 +332,11 @@ def _check_ranges(cfg: dict[str, Any]) -> None:
             if num(p) <= 0:
                 raise ValueError(f"{p} must be greater than 0 (got {num(p)})")
 
+    def non_negative(*paths: str) -> None:
+        for p in paths:
+            if num(p) < 0:
+                raise ValueError(f"{p} must be 0 or more (got {num(p)})")
+
     positive("pinch.start", "pinch.release", "pose.extend_ratio", "pose.curl_ratio",
              "cursor.relative.gain_slow", "cursor.relative.gain_fast",
              "scroll.notches_per_height",
@@ -296,6 +359,27 @@ def _check_ranges(cfg: dict[str, Any]) -> None:
     for p in ("pose.debounce_frames", "pinch.confirm_frames"):
         if num(p) < 1:
             raise ValueError(f"{p} must be at least 1")
+    # Counts and sizes: whole numbers, at least this much.
+    for p, low in (("camera.index", 0), ("camera.width", 1), ("camera.height", 1),
+                   ("tracker.num_hands", 1), ("tracker.second_hand_check_every", 0),
+                   ("pose.debounce_frames", 1), ("pinch.confirm_frames", 1),
+                   ("safety.lost_hand_release_frames", 1)):
+        v = num(p)
+        if v != int(v) or v < low:
+            raise ValueError(f"{p} must be a whole number of at least {low} (got {v:g})")
+    positive("camera.fps", "cursor.relative.mouse_px_per_screen")
+    if cfg["double_click"]["os_time_ms"] != "auto":
+        positive("double_click.os_time_ms")
+    # One Euro filters: a cutoff of 0 divides by zero; a negative beta inverts them.
+    for f in ("cursor.filter", "cursor.relative.filter", "scroll.filter", "zoom.filter"):
+        positive(f"{f}.min_cutoff", f"{f}.d_cutoff")
+        non_negative(f"{f}.beta")
+    non_negative("cursor.deadzone", "scroll.deadzone", "zoom.deadzone",
+                 "cursor.click_freeze_ms", "cursor.relative.min_speed",
+                 "scroll.settle_ms", "scroll.fling.min_speed", "scroll.fling.boost_ramp_s",
+                 "scroll.fling.stack.window_s", "scroll.fling.stack.settle_ms",
+                 "zoom.settle_ms", "zoom.ctrl_release_ms", "double_click.window_ms",
+                 "double_click.max_move", "pinch.min_finger_reach", "pinch.right_min_reach")
     for p in ("pinch.min_facing", "scroll.fling.stack.factor"):
         if not 0 <= num(p) <= 1.5:
             raise ValueError(f"{p} must be between 0 and 1.5")

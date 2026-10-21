@@ -272,7 +272,9 @@ def main(argv=None) -> None:
     args = parse_args(argv)
     try:
         cfg = load_config(args.config)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, TypeError) as exc:
+        # TypeError: a wrong kind of value that slipped past the checks; still a
+        # config problem, so report it the same way rather than with a traceback.
         sys.exit(f"Config error: {exc}")
     for warning in cfg["_warnings"]:
         print(f"Config warning: {warning}")

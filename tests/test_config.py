@@ -161,6 +161,82 @@ def test_values_that_break_the_app_are_refused(cfgdir, text, message):
         _load(cfgdir)
 
 
+# -- empty sections and wrong kinds of values ---------------------------------------
+
+@pytest.mark.parametrize("text, section", [
+    ("pinch:\n  # start: 0.3\n", "pinch"),                       # everything commented out
+    ("scroll:\n  fling:\n  # boost: 3\n", "scroll.fling"),        # nested
+    ("cursor:\n  relative:\n    filter:\n", "cursor.relative.filter"),
+])
+def test_section_with_nothing_under_it_is_a_warning(cfgdir, text, section):
+    """Commenting out every setting under a heading leaves an empty (null) section.
+    It used to crash with a TypeError traceback; now the defaults stay."""
+    _write(cfgdir, "local.yaml", text)
+    cfg = _load(cfgdir)
+    assert any(f"'{section}' has no settings under it" in w for w in cfg["_warnings"])
+    node = cfg
+    for part in section.split("."):
+        node = node[part]
+    assert isinstance(node, dict) and node      # defaults kept
+
+
+@pytest.mark.parametrize("text, section", [
+    ("cursor: 5\n", "'cursor' must be a section"),
+    ("pinch: [0.3, 0.4]\n", "'pinch' must be a section"),
+    ("scroll:\n  fling: fast\n", "'scroll.fling' must be a section"),
+])
+def test_value_in_place_of_a_section_is_refused(cfgdir, text, section):
+    _write(cfgdir, "local.yaml", text)
+    with pytest.raises(ValueError, match=section):
+        _load(cfgdir)
+
+
+@pytest.mark.parametrize("text, message", [
+    # quoted values are text, not numbers or true/false
+    ("cursor:\n  region:\n    x_min: \"0.2\"\n", "cursor.region.x_min must be a number"),
+    ("preview:\n  enabled: \"false\"\n", "preview.enabled must be true or false"),
+    ("camera:\n  mirror: 0\n", "camera.mirror must be true or false"),
+    ("zoom:\n  enabled: off please\n", "zoom.enabled must be true or false"),
+    ("double_click:\n  os_time_ms: fast\n", "os_time_ms must be auto or a number"),
+    ("double_click:\n  os_time_ms: 0\n", "os_time_ms must be greater than 0"),
+    ("cursor:\n  relative:\n    screen_aspect: wide\n", "screen_aspect must be auto or a number"),
+    ("cursor:\n  relative:\n    trackball_mouse_speed: fast\n", "number or null"),
+    ("tracker:\n  model: 5\n", "tracker.model must be a word or text"),
+    # whole numbers
+    ("tracker:\n  num_hands: 0\n", "num_hands must be a whole number of at least 1"),
+    ("tracker:\n  num_hands: 1.5\n", "num_hands must be a whole number"),
+    ("tracker:\n  second_hand_check_every: -1\n", "second_hand_check_every"),
+    ("camera:\n  width: 0\n", "camera.width"),
+    ("camera:\n  index: -1\n", "camera.index"),
+    ("safety:\n  lost_hand_release_frames: 0\n", "lost_hand_release_frames"),
+    # ranges that break the maths
+    ("camera:\n  fps: 0\n", "camera.fps"),
+    ("scroll:\n  filter:\n    min_cutoff: 0\n", "scroll.filter.min_cutoff"),
+    ("zoom:\n  filter:\n    beta: -1\n", "zoom.filter.beta"),
+    ("cursor:\n  deadzone: -0.1\n", "cursor.deadzone must be 0 or more"),
+    ("scroll:\n  fling:\n    stack:\n      window_s: -1\n", "stack.window_s"),
+])
+def test_wrong_kind_of_value_is_refused(cfgdir, text, message):
+    _write(cfgdir, "local.yaml", text)
+    with pytest.raises(ValueError, match=message):
+        _load(cfgdir)
+
+
+@pytest.mark.parametrize("text", [
+    "double_click:\n  os_time_ms: 500\n",
+    "cursor:\n  relative:\n    screen_aspect: 1.78\n",
+    "cursor:\n  relative:\n    trackball_mouse_speed: null\n",
+    "cursor:\n  relative:\n    trackball_mouse_speed: -0.25\n",
+    "tracker:\n  num_hands: 1\n  second_hand_check_every: 0\n",
+    "pinch:\n  right_min_reach: 0\n",
+    "cursor:\n  region:\n    x_min: 0\n    x_max: 1\n",          # ints where floats are usual
+    "camera:\n  width: 1280.0\n  height: 720\n",                 # 1280.0 is a whole number
+])
+def test_valid_values_of_every_kind_still_load(cfgdir, text):
+    _write(cfgdir, "local.yaml", text)
+    assert _load(cfgdir)["_warnings"] == []
+
+
 def test_legacy_scroll_invert_is_migrated(cfgdir):
     _write(cfgdir, "local.yaml", "scroll:\n  invert: false\n")
     cfg = _load(cfgdir)

@@ -515,6 +515,40 @@ def test_quick_second_flick_stacks(rig):
     assert "fling (stacked)" in rig.events
 
 
+def _long_drag_then_flick(misread_at: int | None) -> Rig:
+    """One upward drag of 20 frames (optionally with one misread frame), released
+    while still moving, then left to glide out."""
+    r = Rig()
+    _start_scroll(r)
+    for i in range(20):
+        r.move(1, dy=-0.035, pose=NONE if i == misread_at else TWO)
+    r.move(3, dy=-0.035, pose=PALM)
+    r.hold(90, pose=PALM)
+    return r
+
+
+def test_misread_frame_mid_drag_does_not_stack_the_fling():
+    """A single frame read as another pose mid-drag starts and catches a one-frame
+    glide. That isn't a real catch, so the final fling must not stack on it."""
+    clean, glitch = _long_drag_then_flick(None), _long_drag_then_flick(8)
+    assert "fling (stacked)" not in glitch.events
+    assert glitch.ptr.scroll_total() == pytest.approx(clean.ptr.scroll_total(), rel=0.05)
+
+
+@pytest.mark.parametrize("off_frames, stacks", [(2, False), (5, True)])
+def test_only_a_glide_that_ran_a_while_counts_as_caught(off_frames, stacks):
+    """The catch counts once the glide has run MIN_CATCH_AGE_S (0.1 s = 3 frames)."""
+    r = Rig()
+    _start_scroll(r)
+    r.move(6, dy=-0.05, pose=TWO)
+    r.step(pose=PALM)                      # lift: glide starts
+    r.hold(off_frames - 1, pose=PALM)
+    r.hold(3, pose=TWO)                    # catch
+    r.move(6, dy=-0.05, pose=TWO)          # flick again, same way
+    r.step(pose=PALM)
+    assert ("fling (stacked)" in r.events) is stacks
+
+
 def test_scroll_lift_when_hand_leaves_view_mid_swipe(rig):
     _start_scroll(rig)
     rig.move(6, dy=-0.05, pose=TWO)

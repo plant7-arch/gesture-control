@@ -89,3 +89,32 @@ def test_version_flag(capsys):
         parse_args(["--version"])
     assert exc.value.code == 0
     assert capsys.readouterr().out.strip() == f"gesture-control {gesture_control.__version__}"
+
+
+@pytest.mark.parametrize("text, message", [
+    ("cursor:\n  region:\n    x_min: \"0.2\"\n", "cursor.region.x_min must be a number"),
+    ("cursor: 5\n", "'cursor' must be a section"),
+])
+def test_bad_config_exits_with_a_message_not_a_traceback(tmp_path, text, message):
+    import shutil
+
+    from gesture_control.app import main
+    from gesture_control.config import DEFAULT_CONFIG_PATH
+
+    shutil.copy(DEFAULT_CONFIG_PATH, tmp_path / "gestures.yaml")
+    (tmp_path / "local.yaml").write_text(text)
+    with pytest.raises(SystemExit) as exc:
+        main(["--config", str(tmp_path / "gestures.yaml"), "--dry-run", "--no-preview"])
+    assert str(exc.value.code).startswith("Config error:") and message in str(exc.value.code)
+
+
+def test_unexpected_type_error_while_loading_is_still_a_config_error(monkeypatch):
+    from gesture_control import app
+
+    def broken(_path):
+        raise TypeError("'<' not supported between instances of 'str' and 'float'")
+
+    monkeypatch.setattr(app, "load_config", broken)
+    with pytest.raises(SystemExit) as exc:
+        app.main(["--dry-run", "--no-preview"])
+    assert str(exc.value.code).startswith("Config error:")

@@ -263,7 +263,8 @@ quick swipe the same way. The peace sign catches the glide for a moment, and the
 fling **adds the caught speed** to your swipe, so each quick flick goes faster than the
 last (up to `fling.max_notches_per_s`). This only happens if you release the new swipe
 within a second of the catch and swipe the same way; a slow drag or a pause in between
-gives a normal fling.
+gives a normal fling. A catch only counts once the glide has run for about 0.1 s, so a
+tracking glitch in the middle of one long swipe can't make it stack and overshoot.
 
 ### If scrolling doesn't behave
 
@@ -397,21 +398,28 @@ YAML rules that matter here:
 - Write each setting as `name: value`, with a space after the colon.
 - Text after `#` is a comment.
 - Values: numbers (`0.32`, `700`), `true` / `false`, words (`relative`), and lists in
-  square brackets (`[0.63, 0.58]`).
+  square brackets (`[0.63, 0.58]`). **Don't put quotes around numbers or `true` /
+  `false`**: `"0.2"` and `"false"` are text, and the app refuses them.
 - Only include the settings you change; everything else keeps its default.
+- A section heading with nothing under it (for example `pinch:` with every line below
+  commented out) is fine: it's ignored with a warning, and that section keeps its defaults.
 
 If something is wrong, the app tells you at startup:
 
 ```
 Config error: local.yaml (line 3, column 11): mapping values are not allowed here. ...
 Config warning: local.yaml: unknown setting 'pinch.strat' (typo?) - ignored
+Config warning: local.yaml: 'pinch' has no settings under it - ignored
 Config error: pinch.release (0.3) must be larger than pinch.start (0.4); otherwise a resting thumb clicks over and over
+Config error: preview.enabled must be true or false, without quotes (got 'false')
 ```
 
 Values that would make the app misbehave (not just feel different) are refused this way:
-negative or zero speeds and gains, `pinch.release` not above `pinch.start`,
-`pose.extend_ratio` not above `curl_ratio`, frame counts below 1, and a cursor region
-outside 0..1.
+the wrong kind of value (text where a number or `true` / `false` belongs, a single
+value where a section belongs), negative or zero speeds and gains, `pinch.release` not
+above `pinch.start`, `pose.extend_ratio` not above `curl_ratio`, frame counts below 1
+or not whole numbers, `tracker.num_hands` below 1, filter cutoffs of 0, negative
+deadzones and times, and a cursor region outside 0..1.
 
 When `config/local.yaml` loads, the startup line `Also loaded: config/local.yaml`
 confirms it. `uv run gesture-control --dry-run` is a safe way to try changes: everything

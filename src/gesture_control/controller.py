@@ -32,6 +32,11 @@ from .features import FIST, NONE, POINT, TWO, HandFeatures
 from .filters import OneEuroFilter
 from .pointer import HI_RES_PER_NOTCH, VirtualKeys, VirtualPointer
 
+# A glide must have run at least this long for catching it to count towards stacking.
+# Leaving the peace sign and making it again takes a person well over 0.1 s; a glide
+# caught sooner was started by a misread frame in the middle of one drag, and stacking
+# on it would make the next fling overshoot.
+MIN_CATCH_AGE_S = 0.1
 
 class Mode(str, Enum):
     IDLE = "idle"
@@ -320,8 +325,11 @@ class GestureController:
         self.tick()
         # Catch a glide on the very first frame of the peace sign, like touching the glass.
         # Its speed is remembered: a quick swipe the same way adds it to the next fling.
+        # A glide only frames old (a misread frame mid-drag) still stops, but isn't
+        # remembered, so it can't stack.
         if self._fling_v and feats is not None and feats.pose == TWO and not self.paused:
-            self._caught_v, self._caught_t = self._fling_v, t
+            real = self._fling_age >= MIN_CATCH_AGE_S
+            self._caught_v, self._caught_t = (self._fling_v if real else 0.0), t
             self._stop_fling()
         self._apply_fling(t)
 
