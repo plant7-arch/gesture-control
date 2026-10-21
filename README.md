@@ -426,7 +426,9 @@ confirms it. `uv run gesture-control --dry-run` is a safe way to try changes: ev
 works except that clicks and movement are printed instead of performed.
 
 To reset a setting, delete it from `local.yaml`. To reset everything, delete the file.
-To undo calibration, delete `config/calibration.yaml`.
+To undo calibration, delete `config/calibration.yaml`. If that file gets damaged, the
+next calibration keeps the old one as `config/calibration.yaml.bak` (git-ignored, like
+the calibration itself) and tells you, so nothing is lost silently.
 
 ### Common changes
 
@@ -462,11 +464,11 @@ about 9 cm), so they don't change with distance from the camera.
 | Setting | Default | What it does |
 |---|---|---|
 | `index` | `0` | Camera device number: `0` = `/dev/video0` (`--camera N` overrides it) |
-| `width`, `height` | `640`, `480` | Capture resolution. Higher doesn't improve tracking, it only costs speed |
+| `width`, `height` | `640`, `480` | Capture resolution. Higher doesn't improve tracking, it only costs speed. If the camera doesn't offer this size, a startup note says which size it uses instead; the app works with that size |
 | `fps` | `30` | Requested frame rate (your webcam's maximum is 30) |
 | `fourcc` | `MJPG` | Camera format. `MJPG` gives full frame rate; `YUYV` is the uncompressed alternative |
 | `mirror` | `true` | Mirror the image so moving your hand right moves the cursor right |
-| `lock_framerate` | `true` | Stop auto-exposure lowering the frame rate in dim light |
+| `lock_framerate` | `true` | Stop auto-exposure lowering the frame rate in dim light (sets the camera's `exposure_dynamic_framerate` to 0 while the app runs and puts it back at exit; a camera already at 0 is left at 0) |
 
 #### `tracker` (MediaPipe hand tracking)
 
@@ -629,7 +631,8 @@ The tests need no camera, `/dev/uinput` or desktop: the virtual devices run in d
 mode and record what they would have sent, and hands are fed in frame by frame on a
 fake 30 fps clock. They cover the model download, pose detection, pinch arming, clicks,
 double clicks, drags, scrolling and flings, pause, two-hand zoom, cursor movement in
-both modes, and config loading and validation. They read `config/gestures.yaml` but never your
+both modes, config loading and validation, and the camera reader's shutdown (with a
+fake camera). They read `config/gestures.yaml` but never your
 `local.yaml` or `calibration.yaml`, so your own settings don't change the results.
 
 The model download is tested offline. One test checks that the pinned model URL still

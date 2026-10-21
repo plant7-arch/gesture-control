@@ -125,8 +125,9 @@ class Overlay:
 
         if st.zoom_blocked:
             _shade(frame, 0, h - 44, w, h)
-            why = ("touchpad turns off when a mouse is connected" if "mouse is connected"
-                   in st.zoom_blocked else "touchpad is turned off in Settings")
+            why = ("touchpad turns off when a mouse is connected"
+                   if st.zoom_blocked_state == "disabled-on-external-mouse"
+                   else "touchpad is turned off in Settings")
             _text(frame, f"Zoom is off: {why} (see terminal)", (12, h - 18), MAGENTA, 0.48)
             return frame
 

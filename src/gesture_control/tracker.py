@@ -82,11 +82,15 @@ class HandTracker:
                 cat = result.handedness[i][0]
                 label, score = cat.category_name, float(cat.score)
             hands.append(Hand(image=img, world=world, handedness=label, score=score))
+        # The Tasks API reports no per-hand detection or presence score; the
+        # handedness score is the only per-hand confidence it gives, so hands are
+        # ordered by it. It only decides which hand drives the cursor when there's
+        # no previous position to follow (app._pick_primary).
         hands.sort(key=lambda h: h.score, reverse=True)
         return hands
 
     def process_all(self, frame_bgr: np.ndarray, timestamp_ms: int) -> list[Hand]:
-        """All detected hands in a BGR frame, most confident first."""
+        """All detected hands in a BGR frame, highest handedness score first."""
         # VIDEO mode requires strictly increasing timestamps.
         ts = max(int(timestamp_ms), self._last_ts + 1)
         self._last_ts = ts

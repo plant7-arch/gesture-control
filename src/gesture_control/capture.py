@@ -25,6 +25,7 @@ class Camera:
         self._seq = 0
         self.actual: tuple[int, int, float] = (0, 0, 0.0)
         self._saved_dynamic_fps: int | None = None
+        self._release_lock = threading.Lock()
 
     def start(self) -> None:
         if self.cfg.get("lock_framerate", True):
@@ -63,7 +64,8 @@ class Camera:
     def _lock_framerate(self) -> None:
         """Stop auto-exposure from lowering the frame rate in dim light (best effort).
         The camera's previous setting is remembered and put back by stop(), so other
-        apps (video calls) aren't left with it changed."""
+        apps (video calls) aren't left with it changed. A camera already at 0 isn't
+        touched, now or at stop()."""
         out = self._v4l2("-C", self.CONTROL)  # e.g. "exposure_dynamic_framerate: 1"
         if out is None or ":" not in out:
             return  # no v4l2-ctl, or this camera doesn't have the control
@@ -74,44 +76,42 @@ class Camera:
         if self._saved_dynamic_fps != 0:
             self._v4l2("-c", f"{self.CONTROL}=0")
 
-    def _default_value(self) -> int | None:
-        """The camera's own default for the control, from `v4l2-ctl --list-ctrls`:
-        "exposure_dynamic_framerate 0x009a0903 (bool) : default=1 value=0"."""
-        out = self._v4l2("--list-ctrls") or ""
-        for line in out.splitlines():
-            if line.strip().startswith(self.CONTROL) and "default=" in line:
-                try:
-                    return int(line.split("default=", 1)[1].split()[0])
-                except (ValueError, IndexError):
-                    return None
-        return None
-
     def _restore_framerate(self) -> None:
+        """Put the control back, but only if this app changed it. A camera that was
+        already at 0 when the app started stays at 0: that's someone's own setting."""
         saved, self._saved_dynamic_fps = self._saved_dynamic_fps, None
-        if saved is None:
-            return
-        if saved == 0:
-            # Already 0 at startup: most likely left that way by an earlier version of
-            # this app, so put back the camera's own default instead.
-            saved = self._default_value()
         if saved not in (None, 0):
             self._v4l2("-c", f"{self.CONTROL}={saved}")
 
+    def _release_cap(self) -> None:
+        """Release the capture exactly once, from whichever side gets here first."""
+        with self._release_lock:
+            cap, self._cap = self._cap, None
+        if cap is not None:
+            cap.release()
+
     def _run(self) -> None:
-        assert self._cap is not None
+        cap = self._cap
+        assert cap is not None
         failures = 0
-        while self._running:
-            ok, frame = self._cap.read()
-            ts = time.monotonic()
-            if not ok or frame is None:
-                failures += 1
-                time.sleep(0.01 if failures < 100 else 0.2)
-                continue
-            failures = 0
-            with self._cond:
-                self._frame, self._ts = frame, ts
-                self._seq += 1
-                self._cond.notify_all()
+        try:
+            while self._running:
+                ok, frame = cap.read()
+                ts = time.monotonic()
+                if not ok or frame is None:
+                    failures += 1
+                    time.sleep(0.01 if failures < 100 else 0.2)
+                    continue
+                failures = 0
+                with self._cond:
+                    self._frame, self._ts = frame, ts
+                    self._seq += 1
+                    self._cond.notify_all()
+        finally:
+            # The reader thread releases the capture itself, after its last read():
+            # releasing it from another thread while read() is still running can
+            # crash OpenCV (e.g. a camera that hangs or is unplugged).
+            self._release_cap()
 
     def read(self, last_seq: int, timeout: float = 1.0) -> tuple[np.ndarray, float, int] | None:
         """Wait for a frame newer than last_seq. Returns (frame, capture_time, seq)."""
@@ -122,13 +122,17 @@ class Camera:
                 return None
             return self._frame, self._ts, self._seq
 
+    STOP_TIMEOUT_S = 2.0  # how long stop() waits for a read() in progress
+
     def stop(self) -> None:
         self._running = False
         with self._cond:
             self._cond.notify_all()
-        if self._thread is not None:
-            self._thread.join(timeout=2)
-        if self._cap is not None:
-            self._cap.release()
-            self._cap = None
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=self.STOP_TIMEOUT_S)
+        if thread is None or not thread.is_alive():
+            self._release_cap()  # never started, or already done (then a no-op)
+        # else: read() is stuck; the thread releases the capture when it returns,
+        # and as a daemon thread it doesn't keep the app from exiting.
         self._restore_framerate()

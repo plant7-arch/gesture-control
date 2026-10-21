@@ -1,6 +1,6 @@
 [project]
 name = "gesture-control"
-version = "0.14.5"
+version = "0.14.6"
 description = "Control the mouse with hand gestures from a webcam (MediaPipe + uinput, works on Wayland)"
 readme = "README.md"
 authors = [

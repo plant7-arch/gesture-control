@@ -201,6 +201,31 @@ def test_trackball_output_moves_equal_pixels_on_both_axes():
     assert x > 20 and y == pytest.approx(x, rel=0.05)
 
 
+@pytest.mark.parametrize("tell_size, equal", [(True, True), (False, False)])
+def test_vertical_movement_uses_the_cameras_real_frame_size(tell_size, equal):
+    """The config asks for 640x480 but the camera delivers 1280x720. Up/down must be
+    converted with the real shape, or it's a third too fast (0.75 vs 0.5625)."""
+    cfg = make_config(cursor={"relative": {"output": "trackball",
+                                           "trackball_counts": [1536, 864]}})
+    r = Rig(cfg)
+    if tell_size:
+        r.ctl.set_frame_size(1280, 720)
+    r.point()
+    r.move(15, 0.01, 0.01 * 1280 / 720, pose=POINT)  # 45 degrees in 1280x720 pixels
+    r.hold(15, pose=POINT)
+    rel = r.ptr.of("rel")
+    x, y = sum(e[1] for e in rel), sum(e[2] for e in rel)
+    assert (y == pytest.approx(x, rel=0.05)) is equal
+    if not equal:
+        assert y == pytest.approx(x * 0.75 / 0.5625, rel=0.05)
+
+
+def test_unknown_frame_size_is_ignored(rig):
+    before = rig.ctl.frame_aspect
+    rig.ctl.set_frame_size(0, 0)               # camera couldn't report its size
+    assert rig.ctl.frame_aspect == before == 480 / 640
+
+
 def test_hand_switch_does_not_jump_the_cursor():
     def jump(rebase):
         r = Rig()
@@ -732,6 +757,7 @@ def test_zoom_off_without_a_device():
 def test_zoom_blocked_when_touchpad_is_off(zoom_rig):
     class Off:
         usable = False
+        state = "disabled"
 
         def message(self):
             return "Zoom is off: the touchpad is turned off"
@@ -741,6 +767,54 @@ def test_zoom_blocked_when_touchpad_is_off(zoom_rig):
     st = _zoom(r, [3.0] * 10 + _ramp(3.0, 4.5, 10))
     assert st.zoom_blocked and not r.tp.is_down
     assert "zoom unavailable: touchpad is off" in r.events
+
+
+@pytest.mark.parametrize("state", ["disabled", "disabled-on-external-mouse"])
+def test_zoom_blocked_is_flagged_once_per_block_with_its_reason(zoom_rig, state):
+    """The app prints the message when zoom_blocked_new is set, and the preview picks
+    its text from zoom_blocked_state; neither depends on message wording."""
+    class Off:
+        usable = False
+
+        def __init__(self, s):
+            self.state = s
+
+        def message(self):
+            return "any wording"
+
+    r = zoom_rig()
+    r.ctl.tp_settings = Off(state)
+    flags = []
+    for s in [3.0] * 10 + _ramp(3.0, 4.5, 10):
+        st = r.step(pose=POINT, zoom=(True, s))
+        flags.append(st.zoom_blocked_new)
+        if st.zoom_blocked:
+            assert st.zoom_blocked_state == state
+    assert flags.count(True) == 1
+
+
+def test_overlay_names_the_touchpad_setting_from_the_state():
+    """The preview's zoom-off line follows zoom_blocked_state, not the message text."""
+    import numpy as np
+
+    from gesture_control import overlay as ov
+    from gesture_control.controller import Status
+
+    texts = []
+    o = ov.Overlay.__new__(ov.Overlay)          # no window needed for draw()
+    o.show_region = o.show_landmarks = False
+    o.pinch_start, o.pinch_release = 0.28, 0.42
+    real = ov._text
+    ov._text = lambda img, s, *a, **k: texts.append(s)
+    try:
+        for state in ("disabled", "disabled-on-external-mouse"):
+            st = Status(zoom_blocked="any wording", zoom_blocked_state=state)
+            o.draw(np.zeros((480, 640, 3), np.uint8), None, st, 30.0, 10.0)
+    finally:
+        ov._text = real
+    lines = [t for t in texts if t.startswith("Zoom is off")]
+    assert "turned off in Settings" in lines[0]
+    assert "mouse is connected" in lines[1]
 
 
 # -- construction -------------------------------------------------------------------------

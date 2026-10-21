@@ -16,6 +16,8 @@ wheels/
 # Personal files (never in a build)
 config/local.yaml
 config/calibration.yaml
+config/calibration.yaml.bak
+config/calibration.yaml.tmp
 config/gestures.backup.yaml
 steps.txt
 

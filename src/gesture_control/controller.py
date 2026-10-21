@@ -63,7 +63,9 @@ class Status:
     fist_progress: float = 0.0
     zoom_spread: float | None = None  # index-tip distance in palm lengths (two hands)
     zoom_hands: bool = False          # two pointing hands seen this frame
-    zoom_blocked: str = ""            # why zoom can't work right now (shown in preview)
+    zoom_blocked: str = ""            # why zoom can't work right now (full message)
+    zoom_blocked_state: str = ""      # the touchpad setting behind it ("disabled", ...)
+    zoom_blocked_new: bool = False    # zoom was just found blocked: print the message once
     last_action: str = ""
     # Actions this frame. events: the ones worth printing (-v), once per gesture.
     # actions: every action, including the frequent "quiet" ones (each scroll or zoom
@@ -158,6 +160,8 @@ class GestureController:
         self._tp_ref: float | None = None   # log spread when the pinch started
         self._tp_base = self.tp_start_mm      # finger separation when the pinch started
         self._blocked_said = False
+        self._blocked_new = False
+        self._zoom_blocked_state = ""
         self.zoom_debounce = Debouncer(cfg["pose"]["debounce_frames"])
         self.zoom_step = math.log(float(zc["notch_ratio"]))
         self.zoom_sign = -1.0 if zc["invert"] else 1.0
@@ -208,7 +212,9 @@ class GestureController:
         # movement between the two pinches of a double click.
         self._vcur = [0.0, 0.0]
         cam = cfg["camera"]
-        self.frame_aspect = float(cam["height"]) / max(float(cam["width"]), 1.0)  # h / w
+        # h / w of the camera frames. The configured size is only what was asked for;
+        # app.py calls set_frame_size() with the size the camera really delivers.
+        self.frame_aspect = float(cam["height"]) / max(float(cam["width"]), 1.0)
         self._prev_t = 0.0
         self.last_gain = 0.0
         # Relative mode keeps its own cursor (screen fractions, 0..1) and sends it to the
@@ -278,6 +284,18 @@ class GestureController:
         self._actions: list[str] = []
 
     # -- public ---------------------------------------------------------------
+    def set_frame_size(self, width: int, height: int) -> None:
+        """The size of the camera frames, which can differ from camera.width/height
+        when the camera doesn't offer that size. Relative movement converts vertical
+        hand movement with it, so a wrong value makes up/down too fast or too slow."""
+        if width <= 0 or height <= 0:
+            return
+        aspect = float(height) / float(width)
+        if abs(aspect - self.frame_aspect) > 1e-9:
+            self.frame_aspect = aspect
+            self.rel_filter.reset()     # old positions were in the old units
+            self._prev_mapped = None
+
     def tick(self) -> None:
         """Time-based housekeeping; also call this when no camera frame arrived."""
         if self.touchpad is not None:
@@ -396,6 +414,7 @@ class GestureController:
                     st.zoom_spread = zoom[1]
                     self._zoom(zoom[1], t)
                 st.zoom_blocked = self._zoom_status_blocked
+                st.zoom_blocked_state = self._zoom_blocked_state if st.zoom_blocked else ""
                 return self._status(st)
             if self.mode == Mode.ZOOM:
                 self._enter(Mode.IDLE)
@@ -824,8 +843,10 @@ class GestureController:
                 tp.end()
             self._tp_ref = None
             self._zoom_status_blocked = self.tp_settings.message()
+            self._zoom_blocked_state = self.tp_settings.state
             if not self._blocked_said:
                 self._blocked_said = True
+                self._blocked_new = True
                 self._act("zoom unavailable: touchpad is off")
             return
         self._blocked_said = False
@@ -858,4 +879,5 @@ class GestureController:
         st.last_action = self._last_action
         st.events = self._events
         st.actions = self._actions
+        st.zoom_blocked_new, self._blocked_new = self._blocked_new, False
         return st

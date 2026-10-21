@@ -266,10 +266,46 @@ def test_calibrations_are_merged_not_overwritten(cfgdir):
     assert cfg["_warnings"] == []
 
 
-def test_broken_calibration_file_is_replaced(cfgdir):
-    _write(cfgdir, "calibration.yaml", "cursor: [unclosed\n")
-    save_calibration((0.9, 0.9), cfgdir / "gestures.yaml")
+@pytest.mark.parametrize("broken", [
+    "cursor: [unclosed\n",                 # not valid YAML
+    "- a list\n- not settings\n",          # valid YAML, but not a mapping (used to crash)
+])
+def test_broken_calibration_file_is_kept_as_a_backup(cfgdir, broken):
+    """A calibration file that can't be read is moved to calibration.yaml.bak (and
+    the user told), not silently thrown away; a new file is written."""
+    _write(cfgdir, "calibration.yaml", broken)
+    said = []
+    update_calibration({"cursor": {"abs_scale": [0.9, 0.9]}}, cfgdir / "gestures.yaml",
+                       log=said.append)
+    assert (cfgdir / "calibration.yaml.bak").read_text() == broken
+    assert said and "calibration.yaml.bak" in said[0]
     assert _load(cfgdir)["cursor"]["abs_scale"] == [0.9, 0.9]
+
+
+def test_calibration_is_written_whole_or_not_at_all(cfgdir, monkeypatch):
+    """The new file goes to a temporary file first and is then moved into place:
+    a failed write leaves the old calibration as it was, and no temp file behind."""
+    cfg_path = cfgdir / "gestures.yaml"
+    save_calibration((0.8, 0.8), cfg_path)
+    before = (cfgdir / "calibration.yaml").read_text()
+
+    import os
+
+    def fail(*_a, **_k):
+        raise OSError("disk full")       # the temporary file is written, the move fails
+
+    monkeypatch.setattr(os, "replace", fail)
+    with pytest.raises(OSError):
+        save_calibration((0.5, 0.5), cfg_path)
+    assert (cfgdir / "calibration.yaml").read_text() == before
+    assert sorted(p.name for p in cfgdir.iterdir()) == ["calibration.yaml", "gestures.yaml"]
+
+
+def test_good_calibration_file_makes_no_backup(cfgdir):
+    cfg_path = cfgdir / "gestures.yaml"
+    save_calibration((0.8, 0.8), cfg_path)
+    save_calibration((0.7, 0.7), cfg_path)
+    assert not (cfgdir / "calibration.yaml.bak").exists()
 
 
 @pytest.mark.parametrize("mode, output, device", [

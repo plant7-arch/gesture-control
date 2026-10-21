@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -399,26 +401,42 @@ def pointer_device_mode(cfg: dict[str, Any]) -> str:
     return "absolute"
 
 
-def update_calibration(updates: dict[str, Any], config_path: str | Path | None = None) -> Path:
+def update_calibration(updates: dict[str, Any], config_path: str | Path | None = None,
+                       log: Callable[[str], None] = print) -> Path:
     """Merge `updates` into calibration.yaml next to the main config, keeping whatever
-    else it holds (screen-edge and trackball calibration live side by side)."""
+    else it holds (screen-edge and trackball calibration live side by side).
+
+    A file that can't be read as settings is kept as calibration.yaml.bak (and the
+    user told), never silently dropped. The new file is written to a temporary file
+    and then moved into place, so an interrupted write can't leave half a file."""
     folder = (Path(config_path) if config_path else DEFAULT_CONFIG_PATH).parent
     folder.mkdir(parents=True, exist_ok=True)
     out = folder / CALIBRATION_FILE
-    data: dict[str, Any] = {}
+    data: Any = {}
     if out.exists():
         try:
             data = yaml.safe_load(out.read_text()) or {}
         except yaml.YAMLError:
+            data = None
+        if not isinstance(data, dict):
+            backup = out.with_name(out.name + ".bak")
+            os.replace(out, backup)
+            log(f"{out.name} couldn't be read as settings; kept it as {backup.name} and "
+                "wrote a new one. Copy any values you still need from the backup.")
             data = {}
     data = _deep_merge(data, updates)
-    out.write_text(
-        "# Written by: gesture-control --calibrate / --calibrate-trackball\n"
-        "# cursor.abs_scale: where the cursor reaches the right / bottom screen edge.\n"
-        "# cursor.relative.trackball_counts: movement units across the screen.\n"
-        "# Delete this file (or a key) to undo a calibration.\n"
-        + yaml.safe_dump(data, sort_keys=False, default_flow_style=None)
-    )
+    tmp = out.with_name(out.name + ".tmp")
+    try:
+        tmp.write_text(
+            "# Written by: gesture-control --calibrate / --calibrate-trackball\n"
+            "# cursor.abs_scale: where the cursor reaches the right / bottom screen edge.\n"
+            "# cursor.relative.trackball_counts: movement units across the screen.\n"
+            "# Delete this file (or a key) to undo a calibration.\n"
+            + yaml.safe_dump(data, sort_keys=False, default_flow_style=None)
+        )
+        os.replace(tmp, out)
+    finally:
+        tmp.unlink(missing_ok=True)
     return out
 
 

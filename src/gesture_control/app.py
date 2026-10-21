@@ -434,6 +434,10 @@ def main(argv=None) -> None:
             print("Tip: if the cursor reaches the right/bottom screen edge too early, "
                   "run: uv run gesture-control --calibrate")
         controller = GestureController(cfg, pointer, keys, touchpad, tp_settings)
+        controller.set_frame_size(w, h)  # the size the camera gives, not the one asked for
+        if (w, h) != (int(cfg["camera"]["width"]), int(cfg["camera"]["height"])) and w > 0:
+            print(f"Note: the camera doesn't offer {cfg['camera']['width']}x"
+                  f"{cfg['camera']['height']}, so it runs at {w}x{h} (camera.width/height).")
         if cfg["zoom"]["enabled"] and int(cfg["tracker"]["num_hands"]) < 2:
             print("Note: zoom needs tracker.num_hands: 2 - two-hand zoom is off.")
         if overlay:
@@ -479,6 +483,7 @@ def main(argv=None) -> None:
             feats = anchor = palm = zoom_in = None
             switched = False
             fh, fw = frame.shape[:2]
+            controller.set_frame_size(fw, fh)  # no-op unless the size changed
             if hand is not None:
                 feats = compute_features(feature_points(hand, fw, fh), ext, curl)
                 anchor = anchor_point(hand.image, anchor_name)
@@ -501,7 +506,7 @@ def main(argv=None) -> None:
             if args.verbose:
                 for ev in status.events:
                     print(f"{time.strftime('%H:%M:%S')} {ev}")
-            if status.zoom_blocked and any("unavailable" in ev for ev in status.events):
+            if status.zoom_blocked_new:
                 print(status.zoom_blocked)  # the preview points here for the details
 
             if overlay:
