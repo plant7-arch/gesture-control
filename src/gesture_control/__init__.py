@@ -6,7 +6,7 @@ import os
 # anyway and prints a warning; asking for xcb up front keeps the console quiet.
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
-__version__ = "0.13.2"
+__version__ = "0.13.3"
 
 
 def main() -> None:

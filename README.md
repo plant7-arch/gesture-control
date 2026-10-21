@@ -536,9 +536,23 @@ The preview shows live values that help you choose settings:
 - Absolute mode: too jittery when still, lower `cursor.filter.min_cutoff`; laggy on fast
   moves, raise `cursor.filter.beta`.
 
+## Tests
+
+```bash
+uv run pytest
+```
+
+The tests need no camera, `/dev/uinput` or desktop: the virtual devices run in dry-run
+mode and record what they would have sent, and hands are fed in frame by frame on a
+fake 30 fps clock. They cover pose detection, pinch arming, clicks, double clicks,
+drags, scrolling and flings, pause, two-hand zoom, cursor movement in both modes, and
+config loading and validation. They read `config/gestures.yaml` but never your
+`local.yaml` or `calibration.yaml`, so your own settings don't change the results.
+
 ## Layout
 
 ```
+tests/                        automated tests (uv run pytest)
 docs/scroll/                  scrolling pictures and animations (README)
 docs/zoom/                    zoom picture (README)
 config/gestures.yaml          settings (overwritten by new builds)
