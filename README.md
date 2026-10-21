@@ -93,7 +93,8 @@ code, so the timing and glide match the real app. Left: the camera view. Right: 
 
 1. Start with the peace sign low in the camera view.
 2. Swipe up quickly and, **while your hand is still moving**, open your palm.
-3. The page keeps gliding at your swipe speed and slows to a stop on its own.
+3. The page keeps gliding (at twice your swipe speed by default, see `fling.boost`) and
+   slows to a stop on its own. A quicker swipe glides further.
 
 ### 3. Catch: stop a glide where you want
 
@@ -125,7 +126,8 @@ you would on a phone.
 | It scrolls the wrong way for me | `scroll:` `direction: traditional` in `config/local.yaml` |
 | It glides when I don't want | Stop your hand before opening your palm, raise `fling.min_speed`, or set `fling.enabled: false` |
 | It never glides | Open your palm during the swipe, not after it; or lower `fling.min_speed` to `0.6` |
-| Glide too short / too long | `fling.time_constant_s: 0.7` (longer) or `0.3` (shorter) |
+| Flings don't go far enough | Raise `fling.boost` (default 2.0), e.g. `3.0`. Drags are unaffected |
+| Glide lasts too long / too short | `fling.time_constant_s: 0.3` (stops sooner) or `0.7` (glides longer) |
 
 ## Configuration
 
@@ -203,6 +205,7 @@ To undo calibration, delete `config/calibration.yaml`.
 | Get double clicks more easily | `double_click:` `window_ms: 900` |
 | Scroll faster | `scroll:` `notches_per_height: 40` |
 | Scroll like a mouse wheel instead of a phone | `scroll:` `direction: traditional` |
+| Fling further (drags unchanged) | `scroll:` `fling:` `boost: 3.0` |
 | Longer / shorter glide after a fling | `scroll:` `fling:` `time_constant_s: 0.7` / `0.3` |
 | Turn the glide off | `scroll:` `fling:` `enabled: false` |
 | Pause/resume with a shorter fist hold | `pause:` `fist_hold_s: 0.7` |
@@ -300,6 +303,7 @@ Absolute mode only:
 | `settle_ms` | `200` | Ignore movement just after switching to the scroll pose |
 | `fling.enabled` | `true` | Keep gliding after a fast swipe ends |
 | `fling.min_speed` | `0.8` | Hand speed when leaving the pose (camera-image heights per second) needed for a glide. Lower = glides more easily |
+| `fling.boost` | `2.0` | Glide speed = swipe speed × boost. Higher = flings go further, with the glide lasting only slightly longer. Doesn't affect dragging. `1.0` = glide at exactly your swipe speed |
 | `fling.time_constant_s` | `0.45` | How long the glide lasts. Higher = glides longer and further |
 | `fling.lift_frames` | `2` | Frames out of the peace sign that count as lifting the finger (a single odd frame is ignored) |
 | `filter.*` | `1.0` / `5.0` / `1.0` | Smoothing, as above |

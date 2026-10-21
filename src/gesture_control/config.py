@@ -74,6 +74,7 @@ DEFAULTS: dict[str, Any] = {
         "fling": {
             "enabled": True,
             "min_speed": 0.8,
+            "boost": 2.0,
             "time_constant_s": 0.45,
             "lift_frames": 2,
         },
@@ -175,6 +176,9 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
     if cfg["cursor"]["mode"] not in ("absolute", "relative"):
         raise ValueError("cursor.mode must be 'absolute' or 'relative'")
+    boost = cfg["scroll"]["fling"]["boost"]
+    if not isinstance(boost, (int, float)) or isinstance(boost, bool) or not 0.1 <= boost <= 10:
+        raise ValueError("scroll.fling.boost must be a number between 0.1 and 10")
     if cfg["scroll"]["direction"] not in ("natural", "traditional"):
         raise ValueError("scroll.direction must be 'natural' or 'traditional'")
     if cfg["cursor"]["relative"]["output"] not in ("tablet", "mouse"):

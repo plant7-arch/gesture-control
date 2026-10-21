@@ -179,6 +179,7 @@ class GestureController:
         self.fling_enabled = bool(fl["enabled"])
         self.fling_min_speed = float(fl["min_speed"])
         self.fling_tau = float(fl["time_constant_s"])
+        self.fling_boost = float(fl["boost"])  # glide-only speed multiplier
         self.lift_frames = max(1, int(fl["lift_frames"]))
         self._fling_v = 0.0          # hi-res wheel units per second (signed)
         self._fling_t = 0.0
@@ -505,7 +506,9 @@ class GestureController:
         v = (y0 - y_end) / (t_end - t0)  # frame heights per second, hand up = positive
         if abs(v) < self.fling_min_speed:
             return
-        self._fling_v = v * self.scroll_units * self.scroll_sign
+        # boost multiplies only the glide: dragging keeps its 1:1 feel, and the glide
+        # still decays at the same rate, so it goes further without lasting much longer.
+        self._fling_v = v * self.scroll_units * self.scroll_sign * self.fling_boost
         self._fling_t = t
         self._fling_rem = 0.0
         self._act("fling")
