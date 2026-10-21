@@ -625,8 +625,14 @@ both modes, and config loading and validation. They read `config/gestures.yaml` 
 `local.yaml` or `calibration.yaml`, so your own settings don't change the results.
 
 The model download is tested offline. One test checks that the pinned model URL still
-serves exactly the expected file; it needs internet, so it only runs when asked:
-`GESTURE_NET_TESTS=1 uv run pytest -k online`.
+serves exactly the expected file; it needs internet, so it only runs when asked
+(`GESTURE_NET_TESTS=1 uv run pytest`) and is otherwise listed as skipped, with that
+reason, at the end of the run.
+
+The header at the top of the run shows the app version and library versions, whether
+the hand model is downloaded and verified, and whether this computer has a writable
+`/dev/uinput` and a camera. The tests don't need those two; they're there so one
+glance tells you whether the app itself can run.
 
 ## Layout
 

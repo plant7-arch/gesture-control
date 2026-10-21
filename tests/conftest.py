@@ -30,6 +30,43 @@ FPS = 30.0
 DT = 1.0 / FPS
 
 
+def pytest_report_header(config):
+    """App details at the top of the test run."""
+    import glob
+    import os
+    from importlib.metadata import PackageNotFoundError, version
+
+    import gesture_control
+    from gesture_control import model
+
+    def ver(pkg):
+        try:
+            return f"{pkg} {version(pkg)}"
+        except PackageNotFoundError:
+            return f"{pkg} missing"
+
+    libs = ", ".join(ver(p) for p in ("mediapipe", "opencv-python", "numpy", "evdev"))
+    path = model.DEFAULT_MODEL
+    if not path.exists():
+        model_state = "not downloaded yet (the app downloads it on first start)"
+    elif model.sha256_of(path) == model.MODEL_SHA256:
+        model_state = f"verified, sha256 {model.MODEL_SHA256[:12]}"
+    else:
+        model_state = "differs from the pinned version (the app replaces it on start)"
+    uinput = ("writable" if os.access("/dev/uinput", os.W_OK)
+              else "not writable" if os.path.exists("/dev/uinput") else "missing")
+    cams = ", ".join(sorted(glob.glob("/dev/video*"))) or "none"
+    net = ("on" if os.environ.get("GESTURE_NET_TESTS") == "1"
+           else "off (GESTURE_NET_TESTS=1 runs it)")
+    return [
+        f"gesture-control {gesture_control.__version__}: {libs}",
+        f"hand model: {model_state}",
+        f"this computer (the tests don't need these): /dev/uinput {uinput}, camera {cams}",
+        "config: tests read config/gestures.yaml only, never local.yaml or calibration.yaml",
+        f"network test (pinned model URL): {net}",
+    ]
+
+
 @pytest.fixture(autouse=True)
 def _no_gsettings(monkeypatch):
     """Config loading asks GNOME for the double-click time; tests use a fixed value."""
