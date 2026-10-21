@@ -46,7 +46,9 @@ In the preview window: `q` / `Esc` quits, `p` toggles pause.
 | ...then pinch thumb + index | Left click; keep pinching and move to drag |
 | ...pinch thumb + index twice quickly | Double click |
 | ...then pinch thumb + middle (index stays up) | Right click |
-| Index + middle up (peace sign), move hand up/down | Scroll |
+| Index + middle up (peace sign), move hand up/down | Scroll, phone-style: the page follows your hand |
+| ...swipe and leave the pose while still moving | Fling: the page keeps gliding, then slows down |
+| ...peace sign again while it glides | Stop the glide |
 | Open palm | Neutral: nothing happens |
 | Fist held ~1 s | Pause / resume everything |
 
@@ -56,6 +58,12 @@ you run out of room, open your palm (the cursor stops), move your hand back, and
 again. Movement is measured in palm lengths, so it feels the same at any distance from
 the camera, and tracking follows the centre of your knuckles (the big dot), which stays
 put when you pinch.
+
+Scrolling works like a phone: the peace sign is your finger on the glass. Move your hand
+up and the page moves up with it. To fling, swipe and leave the pose while your hand is
+still moving (open your palm or curl the two fingers): that's lifting your finger, and
+the page keeps gliding and slows to a stop. Make the peace sign again to catch it. If you
+stop your hand before leaving the pose, there's no glide, just like a phone.
 
 In absolute mode (`--mode absolute`) your hand position maps directly to the screen:
 only the rectangle drawn in the preview maps to the screen.
@@ -136,7 +144,10 @@ To undo calibration, delete `config/calibration.yaml`.
 | Stop false clicks | `pinch:` `start: 0.24` |
 | Allow pinches with my hand more turned | `pinch:` `min_facing: 0.5` |
 | Get double clicks more easily | `double_click:` `window_ms: 900` |
-| Scroll faster / in the other direction | `scroll:` `notches_per_height: 40` / `invert: true` |
+| Scroll faster | `scroll:` `notches_per_height: 40` |
+| Scroll like a mouse wheel instead of a phone | `scroll:` `direction: traditional` |
+| Longer / shorter glide after a fling | `scroll:` `fling:` `time_constant_s: 0.7` / `0.3` |
+| Turn the glide off | `scroll:` `fling:` `enabled: false` |
 | Pause/resume with a shorter fist hold | `pause:` `fist_hold_s: 0.7` |
 | Use hand position = screen position | `cursor:` `mode: absolute` |
 | Use a different camera | `camera:` `index: 2` |
@@ -227,9 +238,13 @@ Absolute mode only:
 | Setting | Default | What it does |
 |---|---|---|
 | `notches_per_height` | `25` | Wheel notches for moving your hand the full camera-image height. Higher = faster scrolling |
-| `invert` | `false` | `true` = move your hand up to scroll down |
+| `direction` | `natural` | `natural`: the page follows your hand, like a phone. `traditional`: like a mouse wheel (hand up = scroll up). Replaces the old `invert` setting |
 | `deadzone` | `0.0015` | Ignore vertical movement smaller than this per frame |
 | `settle_ms` | `200` | Ignore movement just after switching to the scroll pose |
+| `fling.enabled` | `true` | Keep gliding after a fast swipe ends |
+| `fling.min_speed` | `0.8` | Hand speed when leaving the pose (camera-image heights per second) needed for a glide. Lower = glides more easily |
+| `fling.time_constant_s` | `0.45` | How long the glide lasts. Higher = glides longer and further |
+| `fling.lift_frames` | `2` | Frames out of the peace sign that count as lifting the finger (a single odd frame is ignored) |
 | `filter.*` | `1.0` / `5.0` / `1.0` | Smoothing, as above |
 
 #### `double_click`

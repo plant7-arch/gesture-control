@@ -92,10 +92,18 @@ cursor:
   deadzone: 0.0015      # ignore cursor changes smaller than this (fraction of screen)
 
 scroll:
+  # Peace sign = finger on the glass. Move up/down to scroll; leave the pose while the
+  # hand is still moving (open palm, curl the fingers) to fling, like a phone.
   notches_per_height: 25  # wheel notches for moving your hand the full frame height
-  invert: false           # true = move hand up to scroll down
+  direction: natural      # natural: content follows your hand, like a phone (hand up =
+                          #   page moves up) | traditional: like a mouse wheel
   deadzone: 0.0015
   settle_ms: 200          # ignore movement just after switching to the scroll pose
+  fling:
+    enabled: true
+    min_speed: 0.8        # hand speed at lift (frame heights per second) needed to fling
+    time_constant_s: 0.45 # how long the glide lasts: higher = longer, further
+    lift_frames: 2        # frames out of the pose that count as lifting the finger
   filter:
     min_cutoff: 1.0
     beta: 5.0

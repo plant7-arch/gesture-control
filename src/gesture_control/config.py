@@ -68,9 +68,15 @@ DEFAULTS: dict[str, Any] = {
     },
     "scroll": {
         "notches_per_height": 25,
-        "invert": False,
+        "direction": "natural",
         "deadzone": 0.0015,
         "settle_ms": 200,
+        "fling": {
+            "enabled": True,
+            "min_speed": 0.8,
+            "time_constant_s": 0.45,
+            "lift_frames": 2,
+        },
         "filter": {"min_cutoff": 1.0, "beta": 5.0, "d_cutoff": 1.0},
     },
     "double_click": {
@@ -150,6 +156,12 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
             loaded.append(name)
     for f in files:
         data = _read_yaml(f)
+        sc = data.get("scroll")
+        if isinstance(sc, dict) and "invert" in sc:  # replaced by scroll.direction
+            inverted = bool(sc.pop("invert"))
+            sc.setdefault("direction", "natural" if inverted else "traditional")
+            warnings.append(f"{f.name}: scroll.invert is replaced by scroll.direction "
+                            f"(using direction: {sc['direction']})")
         for key in _unknown_keys(data, DEFAULTS):
             warnings.append(f"{f.name}: unknown setting '{key}' (typo?) - ignored")
         cfg = _deep_merge(cfg, data)
@@ -163,6 +175,8 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
 
     if cfg["cursor"]["mode"] not in ("absolute", "relative"):
         raise ValueError("cursor.mode must be 'absolute' or 'relative'")
+    if cfg["scroll"]["direction"] not in ("natural", "traditional"):
+        raise ValueError("scroll.direction must be 'natural' or 'traditional'")
     if cfg["cursor"]["relative"]["output"] not in ("tablet", "mouse"):
         raise ValueError("cursor.relative.output must be 'tablet' or 'mouse'")
     if cfg["cursor"]["anchor"] not in ("knuckles", "index_mcp", "index_tip", "palm_center"):

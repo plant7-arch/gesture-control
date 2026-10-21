@@ -4,7 +4,8 @@ Modes
   IDLE   - hand visible but not controlling anything (palm, unknown pose)
   MOVE   - "point" pose: cursor follows the hand (absolute) or its movement
            (relative, touchpad-like); pinches click/drag
-  SCROLL - "two" pose: vertical hand movement scrolls
+  SCROLL - "two" pose: vertical hand movement scrolls, phone-style by default: the
+           content follows the hand, and leaving the pose mid-swipe flings it
 
 Rules that keep it from misfiring
   * poses must be stable for `pose.debounce_frames` frames before they count
@@ -17,6 +18,8 @@ Rules that keep it from misfiring
 
 from __future__ import annotations
 
+import math
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -170,7 +173,19 @@ class GestureController:
         self._last_was_double = False
 
         self.scroll_units = float(sc["notches_per_height"]) * HI_RES_PER_NOTCH
-        self.scroll_sign = -1.0 if sc["invert"] else 1.0
+        # natural (phone): hand up moves the content up = wheel down.
+        self.scroll_sign = -1.0 if sc["direction"] == "natural" else 1.0
+        fl = sc["fling"]
+        self.fling_enabled = bool(fl["enabled"])
+        self.fling_min_speed = float(fl["min_speed"])
+        self.fling_tau = float(fl["time_constant_s"])
+        self.lift_frames = max(1, int(fl["lift_frames"]))
+        self._fling_v = 0.0          # hi-res wheel units per second (signed)
+        self._fling_t = 0.0
+        self._fling_rem = 0.0
+        self._scroll_hist: deque[tuple[float, float]] = deque(maxlen=15)
+        self._scroll_lifted = False  # finger "lifted": ignore the hand until re-entry
+        self._not_two = 0
         self.scroll_deadzone = float(sc["deadzone"])
         self.scroll_settle_s = float(sc["settle_ms"]) / 1000.0
         self._mode_since = 0.0
@@ -194,6 +209,7 @@ class GestureController:
     # -- public ---------------------------------------------------------------
     def toggle_pause(self) -> None:
         self.paused = not self.paused
+        self._stop_fling()
         self._enter(Mode.IDLE)
         self._act("paused" if self.paused else "resumed")
 
@@ -204,8 +220,14 @@ class GestureController:
         distance from the camera."""
         st = Status(paused=self.paused)
         self._events = []
+        # Catch a glide on the very first frame of the peace sign, like touching the glass.
+        if self._fling_v and feats is not None and feats.pose == TWO and not self.paused:
+            self._stop_fling()
+        self._apply_fling(t)
 
         if feats is None or anchor is None:
+            if self.mode == Mode.SCROLL and not self._scroll_lifted:
+                self._lift(t)  # hand left the view mid-swipe: same as lifting the finger
             self._lost += 1
             if self._lost >= self.lost_limit and (self.mode != Mode.IDLE or self.pointer.any_down()):
                 self._enter(Mode.IDLE)
@@ -281,6 +303,7 @@ class GestureController:
                 self._click_release_t = None if self._last_was_double else t
                 self._act("left up")
             if r_start and not self.pointer.is_down("left"):
+                self._stop_fling()
                 self.pointer.click("right")
                 self._freeze_until = t + self.freeze_s
                 self._act("right click")
@@ -289,9 +312,17 @@ class GestureController:
             hold = feats.pose not in (POINT, NONE) and not self.pointer.is_down("left")
             self._move_cursor(anchor, t, st, hold=hold, palm=palm)
         elif self.mode == Mode.SCROLL:
-            # Same for scroll: only scroll on frames that really show the scroll pose.
-            settling = t - self._mode_since < self.scroll_settle_s or feats.pose != TWO
-            self._scroll(anchor, t, settling=settling)
+            # Leaving the scroll pose for lift_frames frames = lifting the finger off the
+            # glass: a fast swipe keeps gliding (fling). A single odd frame is ignored.
+            self._not_two = 0 if feats.pose == TWO else self._not_two + 1
+            if self._scroll_lifted:
+                pass
+            elif self._not_two >= self.lift_frames:
+                self._lift(t)
+            else:
+                # Only scroll on frames that really show the scroll pose.
+                settling = t - self._mode_since < self.scroll_settle_s or feats.pose != TWO
+                self._scroll(anchor, t, settling=settling)
 
         return self._status(st)
 
@@ -299,6 +330,11 @@ class GestureController:
     def _enter(self, mode: Mode) -> None:
         if self.mode == Mode.MOVE and mode != Mode.MOVE:
             self.pointer.release_all()
+        if mode == Mode.SCROLL:
+            self._stop_fling()  # touching the glass again stops a fling
+        self._scroll_lifted = False
+        self._not_two = 0
+        self._scroll_hist.clear()
         self.mode = mode
         self.cursor_filter.reset()
         self.rel_filter.reset()
@@ -333,6 +369,7 @@ class GestureController:
           * if the OS double-click time has already run out since the first press,
             an extra quick click is sent first, so the OS sees two presses in time.
         """
+        self._stop_fling()
         pos = self._cursor_pos()
         double = (
             self.dc_enabled
@@ -435,6 +472,8 @@ class GestureController:
 
     def _scroll(self, anchor: tuple[float, float], t: float, settling: bool = False) -> None:
         y = float(self.scroll_filter([anchor[1]], t)[0])
+        if not settling:
+            self._scroll_hist.append((t, y))
         if self._scroll_prev is None or settling:
             # Just switched pose: the hand is still moving into position, so only
             # track the baseline for a moment instead of scrolling.
@@ -448,6 +487,48 @@ class GestureController:
         if units:
             self.pointer.scroll(units)
             self._act("scroll up" if units > 0 else "scroll down", quiet=True)
+
+    def _lift(self, t: float) -> None:
+        """The finger left the glass. If the hand was still moving fast, keep scrolling
+        with that speed and let it decay (momentum), like a phone."""
+        self._scroll_lifted = True
+        hist = [(ht, hy) for ht, hy in self._scroll_hist if ht >= t - 0.25]
+        self._scroll_hist.clear()
+        if not self.fling_enabled or len(hist) < 2:
+            return
+        t_end, y_end = hist[-1]
+        t0, y0 = next(((ht, hy) for ht, hy in hist if ht >= t_end - 0.12), hist[0])
+        if t_end - t0 < 0.03:
+            t0, y0 = hist[0]
+        if t_end <= t0:
+            return
+        v = (y0 - y_end) / (t_end - t0)  # frame heights per second, hand up = positive
+        if abs(v) < self.fling_min_speed:
+            return
+        self._fling_v = v * self.scroll_units * self.scroll_sign
+        self._fling_t = t
+        self._fling_rem = 0.0
+        self._act("fling")
+
+    def _apply_fling(self, t: float) -> None:
+        if self._fling_v == 0.0:
+            return
+        dt = t - self._fling_t
+        if dt <= 0:
+            return
+        self._fling_t = t
+        amount = self._fling_v * dt + self._fling_rem
+        units = int(amount)
+        self._fling_rem = amount - units
+        if units:
+            self.pointer.scroll(units)
+        self._fling_v *= math.exp(-dt / self.fling_tau)
+        if abs(self._fling_v) < HI_RES_PER_NOTCH / 2:  # under half a notch per second
+            self._stop_fling()
+
+    def _stop_fling(self) -> None:
+        self._fling_v = 0.0
+        self._fling_rem = 0.0
 
     def _act(self, text: str, quiet: bool = False) -> None:
         self._last_action = text
