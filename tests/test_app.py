@@ -64,3 +64,28 @@ def test_cli_flags():
     assert a.dry_run and a.verbose and a.mode == "absolute" and a.camera == 2
     with pytest.raises(SystemExit):
         parse_args(["--mode", "sideways"])
+
+
+def test_version_has_one_source():
+    """pyproject.toml holds the version; the package, the lock file and --version agree."""
+    import tomllib
+    from pathlib import Path
+
+    import gesture_control
+    from gesture_control.config import PROJECT_ROOT
+
+    project = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())["project"]
+    assert gesture_control.__version__ == project["version"]
+    lock = tomllib.loads(Path(PROJECT_ROOT / "uv.lock").read_text())
+    locked = next(p for p in lock["package"] if p["name"] == "gesture-control")
+    assert locked["version"] == project["version"]
+    assert "Add your description" not in project["description"]
+
+
+def test_version_flag(capsys):
+    import gesture_control
+
+    with pytest.raises(SystemExit) as exc:
+        parse_args(["--version"])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip() == f"gesture-control {gesture_control.__version__}"

@@ -125,7 +125,7 @@ wheels = [
 
 [[package]]
 name = "gesture-control"
-version = "0.1.0"
+version = "0.14.1"
 source = { editable = "." }
 dependencies = [
     { name = "evdev" },

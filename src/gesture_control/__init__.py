@@ -6,7 +6,18 @@ import os
 # anyway and prints a warning; asking for xcb up front keeps the console quiet.
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
-__version__ = "0.14.0"
+
+def _version() -> str:
+    """The version from pyproject.toml (the only place it's written), as installed."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("gesture-control")
+    except PackageNotFoundError:  # running from a source tree without installing
+        return "0+unknown"
+
+
+__version__ = _version()
 
 
 def main() -> None:

@@ -165,6 +165,7 @@ class Rig:
         self.ctl = GestureController(self.cfg, self.ptr, self.keys, self.tp)
         self.t = 100.0
         self.events: list[str] = []
+        self.actions: list[str] = []
         self.anchor = (0.5, 0.5)
         self.last = None
 
@@ -179,6 +180,7 @@ class Rig:
         st = self.ctl.update(f, self.anchor if f is not None else None, self.t, palm,
                              zoom, rebase=rebase)
         self.events += st.events
+        self.actions += st.actions
         self.last = st
         return st
 

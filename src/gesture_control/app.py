@@ -7,6 +7,7 @@ import signal
 import sys
 import time
 
+from . import __version__
 from .config import DEFAULT_CONFIG_PATH, load_config, pointer_device_mode
 from .pointer import VirtualKeys, VirtualPointer
 
@@ -35,6 +36,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--calibrate-trackball", action="store_true",
                    help="measure the trackball output (after its one-time setup), then exit")
     p.add_argument("-v", "--verbose", action="store_true", help="print every action")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p.parse_args(argv)
 
 

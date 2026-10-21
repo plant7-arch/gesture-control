@@ -60,7 +60,11 @@ class Status:
     zoom_hands: bool = False          # two pointing hands seen this frame
     zoom_blocked: str = ""            # why zoom can't work right now (shown in preview)
     last_action: str = ""
+    # Actions this frame. events: the ones worth printing (-v), once per gesture.
+    # actions: every action, including the frequent "quiet" ones (each scroll or zoom
+    # step, a hand switch), in order; for anything that follows what the user does.
     events: list[str] = field(default_factory=list)
+    actions: list[str] = field(default_factory=list)
 
 
 class Debouncer:
@@ -266,6 +270,7 @@ class GestureController:
         self._scroll_prev: float | None = None
         self._last_action = ""
         self._events: list[str] = []
+        self._actions: list[str] = []
 
     # -- public ---------------------------------------------------------------
     def tick(self) -> None:
@@ -291,6 +296,7 @@ class GestureController:
         turn the jump into cursor or scroll movement, and disarm pinches."""
         st = Status(paused=self.paused)
         self._events = []
+        self._actions = []
         prev_t, self._last_t = self._last_t, t
         self.tick()
         # Catch a glide on the very first frame of the peace sign, like touching the glass.
@@ -806,6 +812,7 @@ class GestureController:
 
     def _act(self, text: str, quiet: bool = False) -> None:
         self._last_action = text
+        self._actions.append(text)
         if not quiet:
             self._events.append(text)
 
@@ -815,4 +822,5 @@ class GestureController:
         st.left_down = self.pointer.is_down("left")
         st.last_action = self._last_action
         st.events = self._events
+        st.actions = self._actions
         return st

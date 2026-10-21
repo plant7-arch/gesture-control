@@ -150,6 +150,7 @@ Useful options:
 | `-v` | Print every action to the terminal, and how long startup took |
 | `--camera N` | Use `/dev/videoN` |
 | `--config PATH` | Use another config file |
+| `--version` | Print the version (from `pyproject.toml`) |
 
 The camera powers up and the hand tracker loads at the same time, in the background, so
 the preview usually appears within about a second. If startup takes longer than half a

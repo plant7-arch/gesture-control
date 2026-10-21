@@ -722,3 +722,50 @@ def test_controller_builds_from_the_shipped_config(tmp_path):
     r = Rig(cfg)
     assert r.point().mode == Mode.MOVE
     GestureController(cfg, RecordingPointer())
+
+
+# -- actions (every action, for code that follows the user, e.g. a guide) ------------------
+
+def _check_events_within_actions(r):
+    """events are the actions that aren't quiet, in the same order."""
+    it = iter(r.actions)
+    assert all(e in it for e in r.events)
+
+
+def test_scroll_steps_are_actions_but_not_events(rig):
+    _start_scroll(rig)
+    rig.move(15, dy=-0.01, pose=TWO)           # hand up, natural: content up
+    assert "scroll down" in rig.actions and "scroll up" not in rig.actions
+    assert not any(e.startswith("scroll") for e in rig.events)   # -v output unchanged
+    rig.move(15, dy=0.01, pose=TWO)
+    assert "scroll up" in rig.actions
+    _check_events_within_actions(rig)
+
+
+def test_zoom_steps_are_actions_but_not_events(zoom_rig):
+    r = zoom_rig()
+    _zoom(r, [3.0] * 10 + _ramp(3.0, 4.5, 15) + _ramp(4.5, 3.0, 15))
+    assert "zoom in" in r.actions and "zoom out" in r.actions
+    assert r.events == ["zoom"]
+    _check_events_within_actions(r)
+
+
+def test_hand_switch_is_an_action_but_not_an_event(rig):
+    rig.point()
+    st = rig.step(pose=POINT, rebase=True)
+    assert st.actions == ["hand switch"] and st.events == []
+
+
+def test_clicks_are_both(rig):
+    rig.point()
+    rig.left_pinch()
+    rig.left_open()
+    assert rig.actions == rig.events == ["left down", "left up"]
+
+
+def test_actions_are_per_frame(rig):
+    _start_scroll(rig)
+    st = rig.move(5, dy=-0.02, pose=TWO)
+    assert st.actions == ["scroll down"]              # this frame only, not a history
+    rig.hold(30, pose=TWO)                            # hand stopped; smoothing settles
+    assert rig.step(pose=TWO).actions == []
