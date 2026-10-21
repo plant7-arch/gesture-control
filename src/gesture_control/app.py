@@ -7,7 +7,7 @@ import sys
 import time
 
 from .config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, load_config, pointer_device_mode
-from .pointer import VirtualPointer
+from .pointer import VirtualKeys, VirtualPointer
 
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
@@ -30,6 +30,8 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--start-paused", action="store_true", help="start with gestures paused")
     p.add_argument("--pointer-test", action="store_true",
                    help="move the cursor around without the camera, then exit")
+    p.add_argument("--zoom-test", action="store_true",
+                   help="zoom in then out in the focused window (no camera), then exit")
     p.add_argument("--calibrate", action="store_true",
                    help="find where the screen edges are (absolute mode), then exit")
     p.add_argument("-v", "--verbose", action="store_true", help="print every action")
@@ -77,6 +79,59 @@ def pointer_test(mode: str, dry_run: bool, abs_scale=(1.0, 1.0)) -> None:
         ptr.close()
 
 
+def _make_keys(dry_run: bool) -> VirtualKeys:
+    try:
+        return VirtualKeys(dry_run=dry_run)
+    except PermissionError:
+        sys.exit("Permission denied on /dev/uinput (see the setup steps in the README).")
+
+
+def zoom_test(cfg, dry_run: bool) -> None:
+    method = cfg["zoom"]["method"]
+    print(f"Zoom test ({method}): click into a browser or image viewer window now.")
+    for n in (3, 2, 1):
+        print(f"  starting in {n}...")
+        time.sleep(1)
+    ptr = _make_pointer(pointer_device_mode(cfg), dry_run)
+    keys = _make_keys(dry_run)
+    try:
+        for direction, label in ((1, "in"), (-1, "out")):
+            print(f"Zooming {label} (3 steps)...")
+            for _ in range(3):
+                if method == "ctrl_scroll":
+                    keys.press("ctrl")
+                    for _ in range(6):  # one notch as 6 smooth steps
+                        ptr.scroll(direction * 20)
+                        time.sleep(0.02)
+                    keys.release("ctrl")
+                else:
+                    keys.press("ctrl")
+                    keys.tap("equal" if direction > 0 else "minus")
+                    keys.release("ctrl")
+                time.sleep(0.4)
+            time.sleep(0.6)
+        print("Done. If nothing zoomed, try: uv run gesture-control --zoom-test "
+              "with zoom.method: keys in config/local.yaml")
+    finally:
+        keys.close()
+        ptr.close()
+
+
+def _pick_primary(hands, prev_anchor, anchor_name):
+    """The hand that drives one-hand gestures: the one nearest to where the previous
+    primary hand was, so a second hand coming into view doesn't steal the cursor."""
+    from .features import anchor_point
+
+    if len(hands) < 2 or prev_anchor is None:
+        return hands[0] if hands else None
+
+    def dist(h):
+        ax, ay = anchor_point(h.image, anchor_name)
+        return (ax - prev_anchor[0]) ** 2 + (ay - prev_anchor[1]) ** 2
+
+    return min(hands[:2], key=dist)
+
+
 def main(argv=None) -> None:
     args = parse_args(argv)
     try:
@@ -99,6 +154,9 @@ def main(argv=None) -> None:
 
         run_calibration(args.dry_run, args.config)
         return
+    if args.zoom_test:
+        zoom_test(cfg, args.dry_run)
+        return
     if args.pointer_test:
         pointer_test(pointer_device_mode(cfg), args.dry_run, cfg["cursor"]["abs_scale"])
         return
@@ -115,11 +173,12 @@ def main(argv=None) -> None:
     # Heavy imports after argument handling so --help and --pointer-test stay fast.
     from .capture import Camera
     from .controller import GestureController
-    from .features import anchor_point, compute_features, palm_length
+    from .features import POINT, anchor_point, compute_features, hand_spread, palm_length
     from .tracker import HandTracker, feature_points
 
     device = pointer_device_mode(cfg)
     pointer = _make_pointer(device, args.dry_run)
+    keys = _make_keys(args.dry_run) if cfg["zoom"]["enabled"] else None
     camera = Camera(cfg["camera"])
     tracker = None
     overlay = None
@@ -134,7 +193,9 @@ def main(argv=None) -> None:
             print("Tip: if the cursor reaches the right/bottom screen edge too early, "
                   "run: uv run gesture-control --calibrate")
         tracker = HandTracker(cfg["tracker"])
-        controller = GestureController(cfg, pointer)
+        controller = GestureController(cfg, pointer, keys)
+        if cfg["zoom"]["enabled"] and int(cfg["tracker"]["num_hands"]) < 2:
+            print("Note: zoom needs tracker.num_hands: 2 - two-hand zoom is off.")
         if cfg["preview"]["enabled"]:
             from .overlay import Overlay
 
@@ -147,6 +208,7 @@ def main(argv=None) -> None:
         anchor_name = cfg["cursor"]["anchor"]
         mirror = bool(cfg["camera"]["mirror"])
         seq, fps, t_fps, n_fps = 0, 0.0, time.monotonic(), 0
+        prev_anchor = None
         stall_since = None
 
         while True:
@@ -167,15 +229,22 @@ def main(argv=None) -> None:
             if mirror:
                 frame = frame[:, ::-1].copy()  # mirror before detection: handedness stays correct
 
-            hand = tracker.process(frame, int(cap_ts * 1000))
-            feats = anchor = palm = None
+            hands = tracker.process_all(frame, int(cap_ts * 1000))
+            hand = _pick_primary(hands, prev_anchor, anchor_name)
+            other = next((h for h in hands if h is not hand), None)
+            feats = anchor = palm = zoom_in = None
+            fh, fw = frame.shape[:2]
             if hand is not None:
-                fh, fw = frame.shape[:2]
                 feats = compute_features(feature_points(hand, fw, fh), ext, curl)
                 anchor = anchor_point(hand.image, anchor_name)
                 palm = palm_length(hand.image, fw, fh)
+                prev_anchor = anchor
+            if hand is not None and other is not None:
+                other_feats = compute_features(feature_points(other, fw, fh), ext, curl)
+                both_point = feats.pose == POINT and other_feats.pose == POINT
+                zoom_in = (both_point, hand_spread(hand.image, other.image, fw, fh))
             now = time.monotonic()
-            status = controller.update(feats, anchor, now, palm)
+            status = controller.update(feats, anchor, now, palm, zoom_in)
             latency_ms = (time.monotonic() - cap_ts) * 1000
 
             n_fps += 1
@@ -188,7 +257,7 @@ def main(argv=None) -> None:
 
             if overlay:
                 overlay.draw(frame, hand, status, fps, latency_ms,
-                             hand.handedness if hand else "", anchor)
+                             hand.handedness if hand else "", anchor, other)
                 key = overlay.show(frame)
                 if key in (ord("q"), 27) or overlay.closed():
                     break
@@ -199,6 +268,8 @@ def main(argv=None) -> None:
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
     finally:
+        if keys:
+            keys.close()  # releases Ctrl if it was held
         pointer.close()
         camera.stop()
         if tracker:

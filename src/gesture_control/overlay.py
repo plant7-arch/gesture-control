@@ -16,7 +16,8 @@ from .tracker import Hand
 # BGR colours
 WHITE, GREY, BLACK = (255, 255, 255), (150, 150, 150), (0, 0, 0)
 GREEN, CYAN, ORANGE, RED, YELLOW = (80, 220, 80), (230, 200, 40), (40, 160, 255), (60, 60, 230), (40, 220, 240)
-MODE_COLOUR = {Mode.IDLE: GREY, Mode.MOVE: GREEN, Mode.SCROLL: CYAN}
+MAGENTA = (220, 90, 220)
+MODE_COLOUR = {Mode.IDLE: GREY, Mode.MOVE: GREEN, Mode.SCROLL: CYAN, Mode.ZOOM: MAGENTA}
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -61,7 +62,8 @@ class Overlay:
 
     def draw(self, frame: np.ndarray, hand: Hand | None, st: Status,
              fps: float, latency_ms: float, handedness: str = "",
-             anchor: tuple[float, float] | None = None) -> np.ndarray:
+             anchor: tuple[float, float] | None = None,
+             other: Hand | None = None) -> np.ndarray:
         h, w = frame.shape[:2]
         colour = RED if st.paused else MODE_COLOUR[st.mode]
 
@@ -78,7 +80,20 @@ class Overlay:
                 cv2.circle(frame, p, 3, WHITE, -1, cv2.LINE_AA)
             for i, c in ((THUMB_TIP, YELLOW), (INDEX_TIP, YELLOW), (MIDDLE_TIP, ORANGE)):
                 cv2.circle(frame, pts[i], 6, c, 2, cv2.LINE_AA)
-        if anchor is not None:
+        if other is not None and self.show_landmarks:
+            # Second hand: drawn thinner; magenta while it's part of a zoom.
+            oc = MAGENTA if st.mode == Mode.ZOOM else GREY
+            opts = [(int(p[0] * w), int(p[1] * h)) for p in other.image]
+            for a_, b_ in HAND_CONNECTIONS:
+                cv2.line(frame, opts[a_], opts[b_], oc, 1, cv2.LINE_AA)
+            cv2.circle(frame, opts[INDEX_TIP], 6, YELLOW, 2, cv2.LINE_AA)
+            if hand is not None and (st.mode == Mode.ZOOM or st.zoom_hands):
+                p1 = (int(hand.image[INDEX_TIP][0] * w), int(hand.image[INDEX_TIP][1] * h))
+                cv2.line(frame, p1, opts[INDEX_TIP], MAGENTA, 2, cv2.LINE_AA)
+                if st.zoom_spread is not None:
+                    mid = ((p1[0] + opts[INDEX_TIP][0]) // 2, (p1[1] + opts[INDEX_TIP][1]) // 2 - 10)
+                    _text(frame, f"{st.zoom_spread:.2f}", mid, MAGENTA, 0.55, 2)
+        if anchor is not None and st.mode != Mode.ZOOM:
             a = (int(anchor[0] * w), int(anchor[1] * h))
             cv2.circle(frame, a, 8, colour, -1, cv2.LINE_AA)  # the point that drives the cursor
             if st.left_down:

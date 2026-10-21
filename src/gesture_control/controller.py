@@ -4,6 +4,8 @@ Modes
   IDLE   - hand visible but not controlling anything (palm, unknown pose)
   MOVE   - "point" pose: cursor follows the hand (absolute) or its movement
            (relative, touchpad-like); pinches click/drag
+  ZOOM   - two hands, both pointing: spreading them apart zooms in, bringing them
+           together zooms out (Ctrl+wheel, or Ctrl+= / Ctrl+- taps)
   SCROLL - "two" pose: vertical hand movement scrolls, phone-style by default: the
            content follows the hand, and leaving the pose mid-swipe flings it
 
@@ -26,13 +28,14 @@ from typing import Any
 
 from .features import FIST, NONE, POINT, TWO, HandFeatures
 from .filters import OneEuroFilter
-from .pointer import HI_RES_PER_NOTCH, VirtualPointer
+from .pointer import HI_RES_PER_NOTCH, VirtualKeys, VirtualPointer
 
 
 class Mode(str, Enum):
     IDLE = "idle"
     MOVE = "move"
     SCROLL = "scroll"
+    ZOOM = "zoom"
 
 
 @dataclass
@@ -51,6 +54,8 @@ class Status:
     right_armed: bool = False
     cursor: tuple[float, float] | None = None  # normalized screen position
     fist_progress: float = 0.0
+    zoom_spread: float | None = None  # index-tip distance in palm lengths (two hands)
+    zoom_hands: bool = False          # two pointing hands seen this frame
     last_action: str = ""
     events: list[str] = field(default_factory=list)
 
@@ -124,9 +129,24 @@ class PinchDetector:
 
 
 class GestureController:
-    def __init__(self, cfg: dict[str, Any], pointer: VirtualPointer):
+    def __init__(self, cfg: dict[str, Any], pointer: VirtualPointer,
+                 keys: VirtualKeys | None = None):
         self.cfg = cfg
         self.pointer = pointer
+        self.keys = keys
+        zc = cfg["zoom"]
+        self.zoom_enabled = bool(zc["enabled"]) and keys is not None
+        self.zoom_debounce = Debouncer(cfg["pose"]["debounce_frames"])
+        self.zoom_step = math.log(float(zc["notch_ratio"]))
+        self.zoom_sign = -1.0 if zc["invert"] else 1.0
+        self.zoom_method = zc["method"]
+        self.zoom_settle_s = float(zc["settle_ms"]) / 1000.0
+        self.zoom_deadzone = float(zc["deadzone"])
+        self.zoom_ctrl_idle_s = float(zc["ctrl_release_ms"]) / 1000.0
+        self.zoom_filter = OneEuroFilter(**zc["filter"])
+        self._zoom_prev: float | None = None
+        self._zoom_acc = 0.0
+        self._zoom_last_step = -1e9
         pc, cc, sc = cfg["pinch"], cfg["cursor"], cfg["scroll"]
 
         self.pose = Debouncer(cfg["pose"]["debounce_frames"])
@@ -228,10 +248,13 @@ class GestureController:
         self._act("paused" if self.paused else "resumed")
 
     def update(self, feats: HandFeatures | None, anchor: tuple[float, float] | None,
-               t: float, palm: float | None = None) -> Status:
+               t: float, palm: float | None = None,
+               zoom: tuple[bool, float] | None = None) -> Status:
         """palm: palm length (wrist to middle knuckle) in camera-frame widths. Relative
         mode measures hand movement in palm lengths, so it feels the same at any
-        distance from the camera."""
+        distance from the camera.
+        zoom: (both hands pointing, index-tip spread in palm lengths) when two hands are
+        visible, else None."""
         st = Status(paused=self.paused)
         self._events = []
         prev_t, self._last_t = self._last_t, t
@@ -243,6 +266,10 @@ class GestureController:
         self._apply_fling(t)
 
         if feats is None or anchor is None:
+            if self.mode == Mode.ZOOM:
+                self._enter(Mode.IDLE)  # never leave Ctrl held without hands in view
+                self._act("zoom end")
+            self.zoom_debounce.reset()
             if self.mode == Mode.SCROLL and not self._scroll_lifted:
                 self._lift(t, prev_t)  # hand left the view mid-swipe: same as lifting the finger
             self._lost += 1
@@ -275,7 +302,30 @@ class GestureController:
         if self.paused:
             self.left.reset()
             self.right.reset()
+            if self.mode == Mode.ZOOM:
+                self._enter(Mode.IDLE)
             return self._status(st)
+
+        # Two-hand zoom takes priority over every one-hand gesture.
+        if self.zoom_enabled:
+            both = zoom is not None and zoom[0]
+            st.zoom_hands = both
+            zooming = self.zoom_debounce.update("zoom" if both else NONE) == "zoom"
+            if zooming and zoom is not None:
+                if self.mode != Mode.ZOOM:
+                    self._enter(Mode.ZOOM)
+                    self._mode_since = t
+                    self._act("zoom")
+                st.zoom_spread = zoom[1]
+                self._zoom(zoom[1], t)
+                return self._status(st)
+            if self.mode == Mode.ZOOM:
+                self._enter(Mode.IDLE)
+                self._mode_since = t
+                self._act("zoom end")
+                # Wait for a clean one-hand pose before clicking or moving again.
+                self.pose.reset()
+                return self._status(st)
 
         # Pinches (always tracked so hysteresis state stays consistent).
         # A new pinch may only start while the hand faces the camera; an ongoing one
@@ -358,6 +408,14 @@ class GestureController:
     def _enter(self, mode: Mode) -> None:
         if self.mode == Mode.MOVE and mode != Mode.MOVE:
             self.pointer.release_all()
+        if self.mode == Mode.ZOOM and mode != Mode.ZOOM and self.keys is not None:
+            self.keys.release_all()
+        if mode == Mode.ZOOM:
+            self.pointer.release_all()
+            self._stop_fling()
+            self.zoom_filter.reset()
+            self._zoom_prev = None
+            self._zoom_acc = 0.0
         if mode == Mode.SCROLL:
             self._stop_fling()  # touching the glass again stops a fling
             # Right after catching a glide, track the hand almost at once, so a quick
@@ -603,6 +661,39 @@ class GestureController:
         self._fling_v0 = 0.0
         self._carry = 0.0
         self._fling_rem = 0.0
+
+    def _zoom(self, spread: float, t: float) -> None:
+        """Turn changes in hand spread into zoom steps. One step (one wheel notch, or one
+        Ctrl+= / Ctrl+- tap) per notch_ratio change in spread, measured on a log scale
+        so zooming feels the same whether the hands start close or far apart."""
+        x = float(self.zoom_filter([math.log(max(spread, 1e-3))], t)[0])
+        if self._zoom_prev is None or t - self._mode_since < self.zoom_settle_s:
+            self._zoom_prev = x  # hands still settling into the pose
+            return
+        dx = x - self._zoom_prev
+        if abs(dx) < self.zoom_deadzone:
+            if (self.keys.is_down("ctrl") and self.zoom_method == "ctrl_scroll"
+                    and t - self._zoom_last_step > self.zoom_ctrl_idle_s):
+                self.keys.release("ctrl")  # hands held still: let go of Ctrl
+            return
+        self._zoom_prev = x
+        steps = dx / self.zoom_step * self.zoom_sign  # + = zoom in
+        self._zoom_last_step = t
+        if self.zoom_method == "ctrl_scroll":
+            units = int(round(steps * HI_RES_PER_NOTCH))
+            if units:
+                self.keys.press("ctrl")
+                self.pointer.scroll(units)  # wheel up with Ctrl = zoom in
+                self._act("zoom in" if units > 0 else "zoom out", quiet=True)
+        else:  # keys: whole steps only
+            self._zoom_acc += steps
+            while abs(self._zoom_acc) >= 1.0:
+                key = "equal" if self._zoom_acc > 0 else "minus"
+                self.keys.press("ctrl")
+                self.keys.tap(key)
+                self.keys.release("ctrl")
+                self._zoom_acc -= 1.0 if self._zoom_acc > 0 else -1.0
+                self._act("zoom in" if key == "equal" else "zoom out", quiet=True)
 
     def _act(self, text: str, quiet: bool = False) -> None:
         self._last_action = text

@@ -28,7 +28,8 @@ DEFAULTS: dict[str, Any] = {
     },
     "tracker": {
         "model": "models/hand_landmarker.task",
-        "num_hands": 1,
+        "num_hands": 2,
+        "second_hand_check_every": 5,
         "min_detection_confidence": 0.6,
         "min_presence_confidence": 0.6,
         "min_tracking_confidence": 0.5,
@@ -86,6 +87,16 @@ DEFAULTS: dict[str, Any] = {
             },
         },
         "filter": {"min_cutoff": 1.0, "beta": 5.0, "d_cutoff": 1.0},
+    },
+    "zoom": {
+        "enabled": True,
+        "method": "ctrl_scroll",
+        "notch_ratio": 1.15,
+        "invert": False,
+        "settle_ms": 150,
+        "deadzone": 0.004,
+        "ctrl_release_ms": 400,
+        "filter": {"min_cutoff": 1.0, "beta": 2.0, "d_cutoff": 1.0},
     },
     "double_click": {
         "enabled": True,
@@ -191,6 +202,11 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     boost = cfg["scroll"]["fling"]["boost"]
     if not isinstance(boost, (int, float)) or isinstance(boost, bool) or not 0.1 <= boost <= 10:
         raise ValueError("scroll.fling.boost must be a number between 0.1 and 10")
+    if cfg["zoom"]["method"] not in ("ctrl_scroll", "keys"):
+        raise ValueError("zoom.method must be 'ctrl_scroll' or 'keys'")
+    nr = cfg["zoom"]["notch_ratio"]
+    if not isinstance(nr, (int, float)) or isinstance(nr, bool) or not 1.01 <= nr <= 3:
+        raise ValueError("zoom.notch_ratio must be a number between 1.01 and 3")
     if cfg["scroll"]["direction"] not in ("natural", "traditional"):
         raise ValueError("scroll.direction must be 'natural' or 'traditional'")
     if cfg["cursor"]["relative"]["output"] not in ("tablet", "mouse"):

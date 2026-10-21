@@ -139,3 +139,63 @@ class VirtualPointer:
         if self._ui is not None:
             self._ui.close()
             self._ui = None
+
+
+class VirtualKeys:
+    """A tiny virtual keyboard for zoom: Ctrl (held while zooming with the wheel) and
+    Ctrl+= / Ctrl+- taps. Kept separate from the pointer so the pointer device's type
+    doesn't change; GNOME combines modifier keys across devices."""
+
+    KEYS = ("ctrl", "equal", "minus")
+
+    def __init__(self, dry_run: bool = False, name: str = "gesture-control keys"):
+        self.dry_run = dry_run
+        self._down: set[str] = set()
+        self._ui = None
+        if dry_run:
+            return
+        from evdev import UInput
+        from evdev import ecodes as e
+
+        self._e = e
+        self._code = {"ctrl": e.KEY_LEFTCTRL, "equal": e.KEY_EQUAL, "minus": e.KEY_MINUS}
+        self._ui = UInput({e.EV_KEY: list(self._code.values())}, name=name,
+                          vendor=0x1209, product=0x6764)
+        time.sleep(0.3)
+
+    def press(self, key: str) -> None:
+        if key in self._down:
+            return
+        self._down.add(key)
+        self._send(key, 1)
+
+    def release(self, key: str) -> None:
+        if key not in self._down:
+            return
+        self._down.discard(key)
+        self._send(key, 0)
+
+    def is_down(self, key: str) -> bool:
+        return key in self._down
+
+    def tap(self, key: str) -> None:
+        self.press(key)
+        time.sleep(0.005)
+        self.release(key)
+
+    def _send(self, key: str, value: int) -> None:
+        if self.dry_run:
+            print(f"[keys] {key} {'down' if value else 'up'}")
+            return
+        self._ui.write(self._e.EV_KEY, self._code[key], value)
+        self._ui.syn()
+
+    def release_all(self) -> None:
+        for k in list(self._down):
+            self.release(k)
+
+    def close(self) -> None:
+        self.release_all()
+        if self._ui is not None:
+            self._ui.close()
+            self._ui = None

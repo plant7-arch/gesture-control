@@ -127,3 +127,19 @@ def palm_length(image_pts: np.ndarray, frame_w: int, frame_h: int) -> float:
     dx = image_pts[MIDDLE_MCP][0] - image_pts[WRIST][0]
     dy = (image_pts[MIDDLE_MCP][1] - image_pts[WRIST][1]) * frame_h / max(frame_w, 1)
     return float((dx * dx + dy * dy) ** 0.5)
+
+
+def hand_spread(a_pts: np.ndarray, b_pts: np.ndarray, frame_w: int, frame_h: int) -> float:
+    """Distance between the two index fingertips, in palm lengths (average of both
+    hands), from image landmarks. Independent of distance from the camera."""
+    sx = frame_w / max(frame_h, 1)  # make x and y the same unit (frame heights)
+    dx = (a_pts[INDEX_TIP][0] - b_pts[INDEX_TIP][0]) * sx
+    dy = a_pts[INDEX_TIP][1] - b_pts[INDEX_TIP][1]
+    tip_dist = float((dx * dx + dy * dy) ** 0.5)
+
+    def palm(p):
+        px = (p[MIDDLE_MCP][0] - p[WRIST][0]) * sx
+        py = p[MIDDLE_MCP][1] - p[WRIST][1]
+        return float((px * px + py * py) ** 0.5)
+
+    return tip_dist / max((palm(a_pts) + palm(b_pts)) / 2, 1e-6)
