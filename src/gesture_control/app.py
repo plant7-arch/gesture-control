@@ -39,6 +39,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--scroll-test", action="store_true",
                    help="scroll down, up, right, then left under the pointer (no camera), "
                         "then exit")
+    p.add_argument("--scroll-method", choices=["touchpad", "wheel"],
+                   help="override scroll.method (touchpad: a two-finger swipe, like a "
+                        "touchpad; wheel: the mouse wheel)")
     p.add_argument("--zoom-test", action="store_true",
                    help="zoom in then out under the pointer (a real touchpad pinch by "
                         "default; no camera), then exit")
@@ -150,32 +153,47 @@ def pinch_test(cfg, dry_run: bool) -> None:
 SCROLL_TEST_STEPS = (("down", 0, -1), ("up", 0, 1), ("right", 1, 0), ("left", -1, 0))
 
 
-def scroll_test(dry_run: bool, ptr=None, wait=time.sleep) -> None:
-    """Smooth-scroll 5 notches each way, down, up, right, left, under the pointer:
-    checks that the wheel and the sideways wheel reach your apps. ptr: the pointer
-    the app itself would use (already created), else a plain one is made."""
-    print("Scroll test: put the mouse pointer over a page that scrolls both ways (a wide")
-    print("image in a browser, a spreadsheet, a map) now.")
+def _make_scroller(cfg, pointer, settings, dry_run: bool, settle: float = 0.0):
+    """Scrolling as a touchpad swipe (scroll.method: touchpad) or the mouse wheel."""
+    from .scrolling import PadScroller, Scroller
+
+    if cfg["scroll"]["method"] != "touchpad":
+        return Scroller(pointer)
+    try:
+        pad = PadScroller(cfg["scroll"]["touchpad"]["mm_per_notch"], settings,
+                          dry_run=dry_run, settle=settle)
+    except PermissionError:
+        sys.exit("Permission denied on /dev/uinput: see README > Setup, step 3.")
+    if settings is not None and not settings.scroll_usable:
+        print(settings.scroll_message())
+    return Scroller(pointer, pad, settings)
+
+
+def scroll_test(scroller, wait=time.sleep, clock=time.monotonic) -> None:
+    """Scroll 5 notches' worth each way, down, up, right, left, under the pointer, the
+    way the app scrolls (touchpad swipe or mouse wheel): checks that it reaches your
+    apps and how far it goes."""
+    print(f"Scroll test ({scroller.method}): put the mouse pointer over a page or image "
+          "that scrolls both ways (a zoomed-in picture, a pinch-zoomed web page, a map) now.")
     for n in (3, 2, 1):
         print(f"  starting in {n}...")
         wait(1)
-    if ptr is None:
-        ptr = _make_pointer("absolute", dry_run, settle=0.5)
     try:
         for label, sx, sy in SCROLL_TEST_STEPS:
             print(f"Scrolling {label}...")
             for _ in range(25):                  # 5 notches as 25 smooth steps
-                if sy:
-                    ptr.scroll(sy * 24)
-                if sx:
-                    ptr.scroll_h(sx * 24)
+                scroller.scroll(sx * 24, sy * 24)
+                scroller.flush(clock())
                 wait(0.02)
-            wait(0.6)
-        print("Done. The page should have gone down and back up, then right and back "
-              "left. If only up/down worked, the app under the pointer may not scroll "
-              "sideways with a mouse wheel (try a wide image in Firefox).")
+            for _ in range(30):                  # pause: the fingers stop, then lift
+                scroller.flush(clock())
+                wait(0.02)
+        print("Done. The content should have gone down and back up, then right and back "
+              "left. To compare with the mouse wheel, run it again with "
+              "--scroll-method wheel (or touchpad).")
     finally:
-        ptr.close()
+        scroller.close()
+        scroller.pointer.close()
 
 
 def zoom_test(cfg, dry_run: bool) -> None:
@@ -378,6 +396,8 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
         print(f"Config warning: {warning}")
     if args.camera is not None:
         cfg["camera"]["index"] = args.camera
+    if args.scroll_method:
+        cfg["scroll"]["method"] = args.scroll_method
     if args.mode:
         cfg["cursor"]["mode"] = args.mode
     if args.no_preview:
@@ -397,8 +417,14 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
         return
     if args.scroll_test:
         from .display import primary_display
+        from .touchpad import TouchpadSettings
 
-        scroll_test(args.dry_run, _resolve_output(cfg, args.dry_run, primary_display()))
+        ptr = _resolve_output(cfg, args.dry_run, primary_display())
+        if ptr is None:
+            ptr = _make_pointer(pointer_device_mode(cfg), args.dry_run, settle=0.5)
+        settings = (TouchpadSettings(start=False) if cfg["scroll"]["method"] == "touchpad"
+                    else None)
+        scroll_test(_make_scroller(cfg, ptr, settings, args.dry_run, settle=0.5))
         return
     if args.zoom_test:
         zoom_test(cfg, args.dry_run)
@@ -461,7 +487,7 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
     pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="startup")
     camera_f = tracker_f = None
     camera = tracker = overlay = None
-    pointer = keys = touchpad = tp_settings = None
+    pointer = keys = touchpad = tp_settings = scroller = None
     try:
         camera_f = pool.submit(timed("camera", start_camera))
         tracker_f = pool.submit(timed("hand tracker", load_tracker))
@@ -487,13 +513,16 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
         method = cfg["zoom"]["method"]
         if zoom_on and method != "touchpad":
             keys = _make_keys(args.dry_run, settle=0.0)
+        if (zoom_on and method == "touchpad") or cfg["scroll"]["method"] == "touchpad":
+            tp_settings = TouchpadSettings()  # GNOME's touchpad settings apply to both
         if zoom_on and method == "touchpad":
             touchpad = _make_touchpad(cfg, args.dry_run, settle=0.0)
-            tp_settings = TouchpadSettings()
             if not tp_settings.usable:
                 print(tp_settings.message())
-        elif TouchpadSettings.read() == "disabled-on-external-mouse":
+        elif (tp_settings.state if tp_settings else TouchpadSettings.read()) \
+                == "disabled-on-external-mouse":
             print(TouchpadSettings.mouse_note())
+        scroller = _make_scroller(cfg, pointer, tp_settings, args.dry_run)
         timings["devices"] = time.monotonic() - t
 
         preview = bool(cfg["preview"]["enabled"])
@@ -531,7 +560,7 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
         if device == "absolute" and "calibration.yaml" not in cfg["_loaded"]:
             print("Tip: if the cursor reaches the right/bottom screen edge too early, "
                   f"run: {command()} --calibrate")
-        controller = GestureController(cfg, pointer, keys, touchpad, tp_settings)
+        controller = GestureController(cfg, pointer, keys, touchpad, tp_settings, scroller)
         controller.set_frame_size(w, h)  # the size the camera gives, not the one asked for
         if (w, h) != (int(cfg["camera"]["width"]), int(cfg["camera"]["height"])) and w > 0:
             print(f"Note: the camera doesn't offer {cfg['camera']['width']}x"
@@ -637,6 +666,8 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
             keys.close()  # releases Ctrl if it was held
         if touchpad:
             touchpad.close()  # lifts the virtual fingers
+        if scroller:
+            scroller.close()  # lifts the scroll pad's fingers
         if tp_settings:
             tp_settings.stop()
         if pointer:

@@ -177,7 +177,8 @@ Useful options:
 | `--mode absolute` | Hand position = screen position (the default is relative, touchpad-like) |
 | `--calibrate` | Find the screen edges for absolute mode, then exit |
 | `--calibrate-trackball` | Optional: measure the trackball output by hand instead of using GNOME's screen size, then exit |
-| `--scroll-test` | Scroll down, up, right, then left under the mouse pointer (no camera), then exit: checks that both wheels reach your apps |
+| `--scroll-test` | Scroll down, up, right, then left under the mouse pointer, the way the app scrolls (no camera), then exit: checks that scrolling reaches your apps |
+| `--scroll-method touchpad` / `wheel` | Scroll with a touchpad swipe or the mouse wheel this time (overrides `scroll.method`) |
 | `--zoom-test` | Zoom in, then out, under the mouse pointer (a real touchpad pinch by default; no camera), then exit |
 | `--start-paused` | Start paused; hold a fist ~1 s to begin |
 | `--no-preview` | Run without the camera window (Ctrl+C, or `kill`, to quit) |
@@ -326,9 +327,18 @@ movement before the decision isn't lost; it's sent right after.
 - To scroll up/down only, as before, set `scroll:` `horizontal: false`.
 - A flick only stacks on a glide going the same way, so a sideways flick after an
   up/down glide is a fresh fling.
-- To check that sideways scrolling reaches your apps, run
-  `uv run gesture-control --scroll-test` with the pointer over a wide page: it scrolls
-  down, up, right and left.
+- To check that scrolling reaches your apps, run `uv run gesture-control --scroll-test`
+  with the pointer over a zoomed-in picture or a pinch-zoomed page: it scrolls down, up,
+  right and left.
+
+Scrolling reaches apps as a **two-finger swipe on a virtual touchpad** (`scroll.method:
+touchpad`), the same as your laptop touchpad. That matters: many apps treat a mouse
+wheel differently. With a wheel, the image viewer zooms instead of panning, and a
+pinch-zoomed web page only scrolls up and down; with the swipe, both pan in every
+direction. The swipe follows GNOME's touchpad settings: the touchpad must be on with
+two-finger scrolling selected (Settings > Mouse & Touchpad), and its natural-scrolling
+switch doesn't change the direction here: `scroll.direction` decides that. If the
+touchpad settings block the swipe, the app says so at startup and uses the wheel.
 
 ### If scrolling doesn't behave
 
@@ -337,7 +347,9 @@ movement before the decision isn't lost; it's sent right after.
 | Nothing scrolls when I start moving | Hold the peace sign still for a moment first. The preview's top-left label must say SCROLL; if it says IDLE, keep the ring and little finger curled |
 | It scrolls the wrong way for me | `scroll:` `direction: traditional` in `config/local.yaml` (both directions) |
 | It scrolls sideways when I meant up/down | Start the swipe straight up or down: the first movement picks the direction. Or `scroll:` `horizontal: false` |
-| Sideways does nothing in an app | Run `--scroll-test` with the pointer over that app. If up/down works there but sideways doesn't, the app ignores the sideways mouse wheel (the page may also simply not be wider than the window) |
+| The image viewer zooms instead of panning, or a pinch-zoomed page won't scroll sideways | That's what apps do with a mouse wheel. Check the startup messages: with `scroll.method: touchpad` (the default) the app scrolls with a touchpad swipe instead, unless GNOME's touchpad settings block it (it says why) |
+| Sideways does nothing in an app | Run `--scroll-test` with the pointer over that app. If your laptop touchpad doesn't scroll it sideways either, the content isn't wider than the window |
+| Scrolling goes further / less far than I'd like | `scroll:` `touchpad:` `mm_per_notch`: higher scrolls further for the same hand movement (or `notches_per_height`, which works for both methods) |
 | I want diagonal scrolling (maps) | `scroll:` `axis_lock: false` |
 | It glides when I don't want | Stop your hand before opening your palm, raise `fling.min_speed`, or set `fling.enabled: false` |
 | It never glides | Open your palm during the swipe, not after it; or lower `fling.min_speed` to `0.6` |
@@ -509,6 +521,7 @@ the calibration itself) and tells you, so nothing is lost silently.
 | Allow pinches with my hand more turned | `pinch:` `min_facing: 0.5` |
 | Get double clicks more easily | `double_click:` `window_ms: 900` |
 | Scroll faster | `scroll:` `notches_per_height: 40` |
+| Scroll with the mouse wheel instead of a touchpad swipe | `scroll:` `method: wheel` |
 | Scroll like a mouse wheel instead of a phone | `scroll:` `direction: traditional` |
 | Scroll up/down only (no sideways) | `scroll:` `horizontal: false` |
 | Scroll diagonally (maps) | `scroll:` `axis_lock: false` |
@@ -615,6 +628,8 @@ Absolute mode only:
 | `direction` | `natural` | `natural`: the page follows your hand, like a phone (up/down and sideways). `traditional`: like a mouse wheel (hand up = scroll up, hand right = scroll right). Replaces the old `invert` setting |
 | `horizontal` | `true` | Also scroll sideways. `false`: up/down only, as in versions before 0.16 |
 | `axis_lock` | `true` | Each swipe scrolls along one direction only, the one your hand first moves along, so slanted swipes don't drift. `false`: scroll freely in any direction, diagonals included |
+| `method` | `touchpad` | `touchpad`: scrolling is sent as a two-finger swipe on a virtual touchpad, so apps treat it like your laptop touchpad: the image viewer, maps and PDF viewers pan, and a pinch-zoomed page scrolls sideways. Needs the touchpad turned on and two-finger scrolling selected in Settings > Mouse & Touchpad (otherwise the app says so and uses the wheel). `wheel`: sent as a mouse wheel (the image viewer then zooms instead of panning) |
+| `touchpad.mm_per_notch` | `5.0` | `method: touchpad`: virtual finger travel for one wheel notch's worth of scrolling. Higher = scrolls further for the same hand movement |
 | `deadzone` | `0.0015` | Ignore hand movement smaller than this (camera-image heights) |
 | `settle_ms` | `200` | Ignore movement just after switching to the scroll pose |
 | `fling.enabled` | `true` | Keep gliding after a fast swipe ends |
@@ -702,7 +717,8 @@ The tests need no camera, `/dev/uinput` or desktop: the virtual devices run in d
 mode and record what they would have sent, and hands are fed in frame by frame on a
 fake 30 fps clock. They cover the model download, pose detection, pinch arming, clicks,
 double clicks, drags, scrolling and flings (up/down and sideways, with the axis lock), pause, two-hand zoom, cursor movement in
-both modes, config loading and validation, where config and the model live (project
+both modes, the touchpad-swipe scrolling (finger directions, re-grips, lifting only
+when still), config loading and validation, where config and the model live (project
 folder or installed), the two-hand tracking switch (with fake trackers), clean shutdown
 on Ctrl+C / `kill`, the stalled-camera preview, and the camera reader's shutdown (with
 a fake camera). They read `config/gestures.yaml` but never your

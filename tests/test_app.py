@@ -227,17 +227,52 @@ def test_stalled_preview_before_any_frame_uses_the_configured_size(monkeypatch):
 # -- scroll test mode ---------------------------------------------------------------------
 
 def test_scroll_test_goes_down_up_right_left_and_back(capsys):
+    """Mouse wheel: 5 notches each way, ending where it started."""
     from conftest import RecordingPointer
 
     from gesture_control.app import scroll_test
+    from gesture_control.scrolling import Scroller
 
     ptr = RecordingPointer("absolute")
-    scroll_test(dry_run=True, ptr=ptr, wait=lambda s: None)
+    scroll_test(Scroller(ptr), wait=lambda s: None, clock=lambda: 0.0)
     kinds = [(k, u) for k, u in ptr.log]
     assert kinds == ([("scroll", -24)] * 25 + [("scroll", 24)] * 25
                      + [("hscroll", 24)] * 25 + [("hscroll", -24)] * 25)
     assert ptr.scroll_total() == 0 and ptr.hscroll_total() == 0  # ends where it started
-    assert "Scrolling right" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Scroll test (wheel)" in out and "Scrolling right" in out
+
+
+def test_scroll_test_with_the_touchpad_swipes_each_way_and_lifts_in_between():
+    from conftest import RecordingPointer
+
+    from gesture_control.app import scroll_test
+    from gesture_control.scrolling import PadScroller, Scroller
+
+    clock = {"t": 0.0}
+
+    def wait(s):
+        clock["t"] += s
+
+    pad = PadScroller(5.0, None, dry_run=True, settle=0)
+    ptr = RecordingPointer("absolute")
+    scroll_test(Scroller(ptr, pad), wait=wait, clock=lambda: clock["t"])
+    kinds = [e[0] for e in pad.events]
+    assert kinds.count("down") == 4 and kinds.count("up") == 4   # one swipe per direction
+    assert ptr.log == []                                         # nothing on the wheel
+    downs = [e for e in pad.events if e[0] == "down"]
+    assert all(e[1:] == pad.centre for e in downs)
+
+
+def test_scroll_method_can_be_chosen_on_the_command_line(monkeypatch):
+    from gesture_control import app
+
+    seen = {}
+    monkeypatch.setattr(app, "_make_scroller",
+                        lambda cfg, *a, **k: seen.update(method=cfg["scroll"]["method"]))
+    monkeypatch.setattr(app, "scroll_test", lambda *a, **k: None)
+    app.main(["--scroll-test", "--dry-run", "--scroll-method", "wheel"])
+    assert seen["method"] == "wheel"
 
 
 def test_overlay_shows_the_scroll_axis(monkeypatch):

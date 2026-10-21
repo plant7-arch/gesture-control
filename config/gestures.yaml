@@ -116,6 +116,13 @@ scroll:
   axis_lock: true         # each swipe scrolls along one axis only (the one your hand
                           #   moves along first), so a slightly slanted swipe doesn't
                           #   drift sideways. false: scroll freely in any direction
+  method: touchpad        # touchpad: sent as a two-finger swipe on a virtual touchpad,
+                          #   so apps pan like with your laptop touchpad (image viewer,
+                          #   maps, pinch-zoomed pages) | wheel: sent as a mouse wheel
+                          #   (the image viewer then zooms instead of panning)
+  touchpad:
+    mm_per_notch: 5.0     # finger travel for one wheel notch's worth of scrolling.
+                          #   Higher = scrolls further for the same hand movement
   deadzone: 0.0015
   settle_ms: 200          # ignore movement just after switching to the scroll pose
   fling:

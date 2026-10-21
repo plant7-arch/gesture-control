@@ -132,6 +132,8 @@ DEFAULTS: dict[str, Any] = {
         "direction": "natural",
         "horizontal": True,
         "axis_lock": True,
+        "method": "touchpad",
+        "touchpad": {"mm_per_notch": 5.0},
         "deadzone": 0.0015,
         "settle_ms": 200,
         "fling": {
@@ -340,6 +342,10 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     nr = cfg["zoom"]["notch_ratio"]
     if not isinstance(nr, (int, float)) or isinstance(nr, bool) or not 1.01 <= nr <= 3:
         raise ValueError("zoom.notch_ratio must be a number between 1.01 and 3")
+    if cfg["scroll"]["method"] not in ("touchpad", "wheel"):
+        raise ValueError("scroll.method must be 'touchpad' or 'wheel'")
+    if not 0.5 <= float(cfg["scroll"]["touchpad"]["mm_per_notch"]) <= 50:
+        raise ValueError("scroll.touchpad.mm_per_notch must be between 0.5 and 50")
     if cfg["scroll"]["direction"] not in ("natural", "traditional"):
         raise ValueError("scroll.direction must be 'natural' or 'traditional'")
     if cfg["cursor"]["relative"]["output"] not in ("auto", "trackball", "tablet", "mouse"):

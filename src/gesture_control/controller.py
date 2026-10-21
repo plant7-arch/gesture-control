@@ -32,6 +32,7 @@ from . import touchpad as tpm
 from .features import FIST, NONE, POINT, TWO, HandFeatures
 from .filters import OneEuroFilter
 from .pointer import HI_RES_PER_NOTCH, VirtualKeys, VirtualPointer
+from .scrolling import Scroller
 
 # A glide must have run at least this long for catching it to count towards stacking.
 # Leaving the peace sign and making it again takes a person well over 0.1 s; a glide
@@ -158,12 +159,16 @@ class PinchDetector:
 
 class GestureController:
     def __init__(self, cfg: dict[str, Any], pointer: VirtualPointer,
-                 keys: VirtualKeys | None = None, touchpad=None, touchpad_settings=None):
+                 keys: VirtualKeys | None = None, touchpad=None, touchpad_settings=None,
+                 scroller: Scroller | None = None):
         self.cfg = cfg
         self.pointer = pointer
         self.keys = keys
         self.touchpad = touchpad
         self.tp_settings = touchpad_settings
+        # Where scrolling goes: a virtual touchpad swipe (app.py) or the mouse wheel.
+        self.scroller = scroller if scroller is not None else Scroller(pointer)
+        self._now = 0.0  # time of the current update() / stalled() call
         zc = cfg["zoom"]
         self.zoom_method = zc["method"]
         needs = touchpad if self.zoom_method == "touchpad" else keys
@@ -334,8 +339,10 @@ class GestureController:
         everything now, stop any glide, and start fresh when frames come back."""
         self._events = []
         self._actions = []
+        self._now = t
         self.tick()
         self._stop_fling()
+        self.scroller.release()  # lift the scroll pad's fingers too
         self.pose.reset()
         self.zoom_debounce.reset()
         self._fist_start, self._fist_fired = None, False
@@ -364,6 +371,7 @@ class GestureController:
         self._events = []
         self._actions = []
         prev_t, self._last_t = self._last_t, t
+        self._now = t
         self.tick()
         # Catch a glide on the very first frame of the peace sign, like touching the glass.
         # Its speed is remembered: a quick swipe the same way adds it to the next fling.
@@ -741,11 +749,11 @@ class GestureController:
 
     def _send_scroll(self, units: Vec) -> None:
         ux, uy = int(units[0]), int(units[1])
+        if ux or uy:
+            self.scroller.scroll(ux, uy)
         if uy:
-            self.pointer.scroll(uy)
             self._act("scroll up" if uy > 0 else "scroll down", quiet=True)
         if ux:
-            self.pointer.scroll_h(ux)
             self._act("scroll right" if ux > 0 else "scroll left", quiet=True)
 
     def _scroll(self, anchor: tuple[float, float], t: float, settling: bool = False) -> None:
@@ -872,10 +880,8 @@ class GestureController:
         units = (float(int(amount[0])), float(int(amount[1])))
         self._fling_rem = (amount[0] - units[0], amount[1] - units[1])
         ux, uy = int(units[0]), int(units[1])
-        if uy:
-            self.pointer.scroll(uy)
-        if ux:
-            self.pointer.scroll_h(ux)
+        if ux or uy:
+            self.scroller.scroll(ux, uy)
         self._fling_v = self._glide_speed(self._fling_age)
         if _norm(self._fling_v) < HI_RES_PER_NOTCH / 2:  # under half a notch per second
             self._stop_fling()
@@ -964,6 +970,8 @@ class GestureController:
             self._events.append(text)
 
     def _status(self, st: Status) -> Status:
+        # Every update() / stalled() ends here: send this frame's scroll pad event.
+        self.scroller.flush(self._now)
         st.paused = self.paused
         st.mode = self.mode
         st.left_down = self.pointer.is_down("left")

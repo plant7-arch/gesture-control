@@ -221,17 +221,22 @@ class VirtualTouchpad:
 
 
 class TouchpadSettings:
-    """Watches GNOME's touchpad on/off setting (Settings > Mouse & Touchpad), which also
-    applies to the virtual touchpad. Polled in the background every few seconds.
+    """Watches GNOME's touchpad settings (Settings > Mouse & Touchpad), which also apply
+    to the virtual touchpads (pinch zoom and scrolling). Polled in the background
+    every few seconds.
 
     state: "enabled", "disabled", "disabled-on-external-mouse", or "unknown"
+    natural: natural scrolling (content follows the fingers); GNOME's default is on
+    two_finger: two-finger scrolling (off means edge scrolling)
     """
 
-    KEY = ("org.gnome.desktop.peripherals.touchpad", "send-events")
+    SCHEMA = "org.gnome.desktop.peripherals.touchpad"
+    KEY = (SCHEMA, "send-events")
 
     def __init__(self, poll_s: float = 3.0, start: bool = True):
         self.poll_s = poll_s
         self.state = self.read()
+        self._read_scrolling()
         self._stop = threading.Event()
         self._thread = None
         if start and self.state != "unknown":
@@ -252,13 +257,54 @@ class TouchpadSettings:
         return value if value in ("enabled", "disabled", "disabled-on-external-mouse") \
             else "unknown"
 
+    @classmethod
+    def read_bool(cls, key: str, default: bool) -> bool:
+        """A true/false touchpad setting; the default if it can't be read."""
+        if not shutil.which("gsettings"):
+            return default
+        try:
+            out = subprocess.run(["gsettings", "get", cls.SCHEMA, key], capture_output=True,
+                                 text=True, timeout=2, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return default
+        value = out.stdout.strip()
+        return {"true": True, "false": False}.get(value, default)
+
+    def _read_scrolling(self) -> None:
+        self.natural = self.read_bool("natural-scroll", True)
+        self.two_finger = self.read_bool("two-finger-scrolling-enabled", True)
+
     def _run(self) -> None:
         while not self._stop.wait(self.poll_s):
             self.state = self.read()
+            self._read_scrolling()
 
     @property
     def usable(self) -> bool:
         return self.state not in ("disabled", "disabled-on-external-mouse")
+
+    @property
+    def scroll_usable(self) -> bool:
+        """Can the virtual touchpad scroll? It needs the touchpad on and two-finger
+        scrolling (not edge scrolling) turned on."""
+        return self.usable and self.two_finger
+
+    def scroll_message(self) -> str:
+        """Why scrolling uses the mouse wheel instead of the touchpad ("" if it doesn't)."""
+        if self.scroll_usable:
+            return ""
+        if not self.two_finger:
+            why = ("two-finger scrolling is turned off (Settings > Mouse & Touchpad > "
+                   "Touchpad > Scroll Method)")
+        elif self.state == "disabled-on-external-mouse":
+            why = ("the touchpad is set to turn off while a mouse is connected, and this "
+                   "app's virtual pointer counts as a mouse (to change it: gsettings set "
+                   "org.gnome.desktop.peripherals.touchpad send-events enabled)")
+        else:
+            why = "the touchpad is turned off in Settings > Mouse & Touchpad"
+        return (f"Scrolling uses the mouse wheel instead of a touchpad swipe: {why}. "
+                "Some apps then zoom instead of panning (image viewer), and pinch-zoomed "
+                "pages don't scroll sideways.")
 
     def message(self) -> str:
         if self.state == "disabled":
