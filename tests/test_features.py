@@ -6,11 +6,13 @@ from conftest import make_hand, rot_y
 
 from gesture_control.features import (
     FIST,
+    HORNS,
     INDEX_TIP,
     MIDDLE_MCP,
     NONE,
     PALM,
     POINT,
+    THREE,
     TWO,
     WRIST,
     anchor_point,
@@ -33,9 +35,11 @@ def _states(up):
     (ALL, PALM),
     (("index",), POINT),
     (("index", "middle"), TWO),
-    (("index", "pinky"), NONE),         # rock sign: not a gesture
+    (("index", "pinky"), HORNS),        # opens / closes the keyboard
     (("middle",), NONE),
-    (("index", "middle", "ring"), NONE),
+    (("index", "middle", "ring"), THREE),
+    (("middle", "ring", "pinky"), NONE),
+    (("index", "ring"), NONE),
 ])
 def test_classify_pose(up, pose):
     assert classify_pose(*_states(up)) == pose
@@ -53,6 +57,8 @@ def test_in_between_finger_is_neither_up_nor_curled():
     (("index", "middle"), TWO),
     (ALL, PALM),
     ((), FIST),
+    (("index", "pinky"), HORNS),
+    (("index", "middle", "ring"), THREE),
 ])
 def test_synthetic_hands_get_their_pose(up, pose):
     f = compute_features(make_hand(up), EXT, CURL)
@@ -154,3 +160,20 @@ def test_hand_spread_is_in_palm_lengths_and_ignores_distance():
     assert hand_spread(a2, b2, 640, 480) == pytest.approx(near)
     # 0.4 frame widths apart = 0.4 * 640/480 heights; palm = 1.05 * 0.08 heights
     assert near == pytest.approx(0.4 * 640 / 480 / (1.05 * 0.08), rel=0.01)
+
+
+@pytest.mark.parametrize("finger", ["ring", "pinky"])
+def test_ring_and_pinky_pinch_distances(finger):
+    """Thumb on the ring / pinky fingertip: that distance is ~0, the other isn't."""
+    pts = make_hand(ALL)
+    pts[4] = pts[{"ring": 16, "pinky": 20}[finger]]
+    f = compute_features(pts, EXT, CURL)
+    near, far = ((f.pinch_ring, f.pinch_pinky) if finger == "ring"
+                 else (f.pinch_pinky, f.pinch_ring))
+    assert near < 0.01
+    assert far > 0.2
+
+
+def test_open_hand_has_no_ring_or_pinky_pinch():
+    f = compute_features(make_hand(ALL), EXT, CURL)
+    assert f.pinch_ring > 0.42 and f.pinch_pinky > 0.42  # above pinch.release: armed

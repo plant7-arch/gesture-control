@@ -196,6 +196,23 @@ DEFAULTS: dict[str, Any] = {
         "reconnect": True,
         "extra_args": [],
     },
+    "keyboard": {
+        "enabled": True,
+        "toggle": "horns",
+        "toggle_hold_s": 0.8,
+        "region": {"x_min": 0.04, "x_max": 0.96, "y_min": 0.06, "y_max": 0.56},
+        "shortcuts": ["esc", "tab", "ctrl+z", "ctrl+x", "ctrl+c", "ctrl+v", "ctrl+a",
+                      "ctrl+s", "ctrl+f", "alt+tab", "super"],
+        "repeat_delay_s": 0.5,
+        "repeat_rate": 10,
+        "alt_tab_hold_s": 1.5,
+        "echo": True,
+        "filter": {"min_cutoff": 1.5, "beta": 5.0, "d_cutoff": 1.0},
+        "gestures": {
+            "ring_pinch": "enter",
+            "pinky_pinch": "backspace",
+        },
+    },
     "preview": {
         "enabled": True,
         "window_name": "gesture-control",
@@ -458,9 +475,43 @@ def load_config(path: str | Path | None = None,
             or not all(_is_number(v) and 0.1 <= v <= 1.0 for v in scale)):
         raise ValueError("cursor.abs_scale must be two numbers between 0.1 and 1.0")
     cfg["cursor"]["abs_scale"] = [float(scale[0]), float(scale[1])]
+    _check_keyboard(cfg["keyboard"])
     if cfg["double_click"]["os_time_ms"] == "auto":
         cfg["double_click"]["os_time_ms"] = gnome_double_click_ms()
     return cfg
+
+
+def _check_keyboard(kc: dict[str, Any]) -> None:
+    """The keyboard's choices, key names and region."""
+    from .keyboard import parse_spec  # here: keyboard.py imports pointer, not this module
+
+    if kc["toggle"] not in ("horns", "three"):
+        raise ValueError("keyboard.toggle must be 'horns' (index + pinky up) or 'three' "
+                         "(index, middle and ring up)")
+    sc = kc["shortcuts"]
+    if not isinstance(sc, list) or len(sc) > 16:
+        raise ValueError("keyboard.shortcuts must be a list of up to 16 keys or shortcuts, "
+                         "e.g. [esc, ctrl+z, alt+tab] ([] for no shortcut row)")
+    for spec in sc:
+        try:
+            parse_spec(spec)
+        except ValueError as exc:
+            raise ValueError(f"keyboard.shortcuts: {exc}") from None
+    for name in ("ring_pinch", "pinky_pinch"):
+        spec = kc["gestures"][name]
+        if spec == "none":
+            continue
+        try:
+            parse_spec(spec)
+        except ValueError as exc:
+            raise ValueError(f"keyboard.gestures.{name}: {exc} (none turns it off)") from None
+    r = kc["region"]
+    if not (0 <= r["x_min"] < r["x_max"] <= 1 and 0 <= r["y_min"] < r["y_max"] <= 1):
+        raise ValueError("keyboard.region must have 0 <= x_min < x_max <= 1 and "
+                         "0 <= y_min < y_max <= 1")
+    if r["x_max"] - r["x_min"] < 0.3 or r["y_max"] - r["y_min"] < 0.2:
+        raise ValueError("keyboard.region must be at least 0.3 wide and 0.2 high, "
+                         "or the keys are too small to aim at")
 
 
 def gnome_double_click_ms(default: int = 400) -> int:
@@ -505,7 +556,8 @@ def _check_ranges(cfg: dict[str, Any]) -> None:
              "scroll.notches_per_height",
              "scroll.fling.time_constant_s", "scroll.fling.boost",
              "scroll.fling.max_notches_per_s", "pause.fist_hold_s",
-             "zoom.touchpad.gain")
+             "zoom.touchpad.gain", "keyboard.toggle_hold_s", "keyboard.repeat_rate",
+             "keyboard.alt_tab_hold_s")
     sa = cfg["cursor"]["relative"]["screen_aspect"]
     if sa != "auto":
         positive("cursor.relative.screen_aspect")
@@ -539,7 +591,8 @@ def _check_ranges(cfg: dict[str, Any]) -> None:
     if cfg["double_click"]["os_time_ms"] != "auto":
         positive("double_click.os_time_ms")
     # One Euro filters: a cutoff of 0 divides by zero; a negative beta inverts them.
-    for f in ("cursor.filter", "cursor.relative.filter", "scroll.filter", "zoom.filter"):
+    for f in ("cursor.filter", "cursor.relative.filter", "scroll.filter", "zoom.filter",
+              "keyboard.filter"):
         positive(f"{f}.min_cutoff", f"{f}.d_cutoff")
         non_negative(f"{f}.beta")
     non_negative("cursor.deadzone", "scroll.deadzone", "zoom.deadzone",
@@ -547,7 +600,8 @@ def _check_ranges(cfg: dict[str, Any]) -> None:
                  "scroll.settle_ms", "scroll.fling.min_speed", "scroll.fling.boost_ramp_s",
                  "scroll.fling.stack.window_s", "scroll.fling.stack.settle_ms",
                  "zoom.settle_ms", "zoom.ctrl_release_ms", "double_click.window_ms",
-                 "double_click.max_move", "pinch.min_finger_reach", "pinch.right_min_reach")
+                 "double_click.max_move", "pinch.min_finger_reach", "pinch.right_min_reach",
+                 "keyboard.repeat_delay_s")
     if not 0 <= num("scroll.fling.stack.factor") <= 1.5:
         raise ValueError("scroll.fling.stack.factor must be between 0 and 1.5")
     # Shares and probabilities: above 1 they can never be reached, so the feature

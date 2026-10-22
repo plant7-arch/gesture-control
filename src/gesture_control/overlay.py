@@ -19,7 +19,8 @@ if TYPE_CHECKING:  # importing tracker pulls in mediapipe, which loads in the ba
 WHITE, GREY, BLACK = (255, 255, 255), (150, 150, 150), (0, 0, 0)
 GREEN, CYAN, ORANGE, RED, YELLOW = (80, 220, 80), (230, 200, 40), (40, 160, 255), (60, 60, 230), (40, 220, 240)
 MAGENTA = (220, 90, 220)
-MODE_COLOUR = {Mode.IDLE: GREY, Mode.MOVE: GREEN, Mode.SCROLL: CYAN, Mode.ZOOM: MAGENTA}
+MODE_COLOUR = {Mode.IDLE: GREY, Mode.MOVE: GREEN, Mode.SCROLL: CYAN, Mode.ZOOM: MAGENTA,
+               Mode.KEYBOARD: YELLOW}
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -44,8 +45,21 @@ def _text(img, s, org, colour=WHITE, scale=0.5, thick=1):
 
 def _shade(img, x0, y0, x1, y1, k=0.4):
     """Darken a rectangle so text on top of it is readable."""
+    h, w = img.shape[:2]
+    x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, w), min(y1, h)
     roi = img[y0:y1, x0:x1]
     img[y0:y1, x0:x1] = (roi * k).astype(img.dtype)
+
+
+def _arrow(img, r, direction: str, colour) -> None:
+    """A filled triangle in the key rectangle r (the font has no arrow characters)."""
+    cx, cy = (r[0] + r[2]) // 2, (r[1] + r[3]) // 2
+    s = max(4, min(r[2] - r[0], r[3] - r[1]) // 4)
+    pts = {"left": [(cx - s, cy), (cx + s, cy - s), (cx + s, cy + s)],
+           "right": [(cx + s, cy), (cx - s, cy - s), (cx - s, cy + s)],
+           "up": [(cx, cy - s), (cx - s, cy + s), (cx + s, cy + s)],
+           "down": [(cx, cy + s), (cx - s, cy - s), (cx + s, cy - s)]}[direction]
+    cv2.fillPoly(img, [np.array(pts, np.int32)], colour, cv2.LINE_AA)
 
 
 class Overlay:
@@ -62,6 +76,10 @@ class Overlay:
         self.show_region = cfg["cursor"]["mode"] == "absolute"
         self.pinch_start = float(cfg["pinch"]["start"])
         self.pinch_release = float(cfg["pinch"]["release"])
+        from .keyboard import Layout
+
+        self.layout = Layout.from_config(cfg)
+        self.toggle_name = cfg["keyboard"]["toggle"]
         fix_qt_fonts()
         # GUI_NORMAL: no toolbar (pan/zoom/save buttons) or status bar from OpenCV's
         # Qt window, just the image.
@@ -100,6 +118,8 @@ class Overlay:
                 if st.zoom_spread is not None:
                     mid = ((p1[0] + opts[INDEX_TIP][0]) // 2, (p1[1] + opts[INDEX_TIP][1]) // 2 - 10)
                     _text(frame, f"{st.zoom_spread:.2f}", mid, MAGENTA, 0.55, 2)
+        if st.mode == Mode.KEYBOARD and not st.paused:
+            return self._draw_keyboard(frame, st, fps, latency_ms)
         if anchor is not None and st.mode != Mode.ZOOM:
             a = (int(anchor[0] * w), int(anchor[1] * h))
             cv2.circle(frame, a, 8, colour, -1, cv2.LINE_AA)  # the point that drives the cursor
@@ -107,7 +127,7 @@ class Overlay:
                 cv2.circle(frame, a, 14, RED, 3, cv2.LINE_AA)
 
         # Info panel
-        _shade(frame, 0, 0, 250, 172)
+        _shade(frame, 0, 0, 250, 212)
         mode = "PAUSED" if st.paused else st.mode.value.upper()
         _text(frame, mode, (10, 28), colour, 0.8, 2)
         if st.mode == Mode.SCROLL and not st.paused:
@@ -124,16 +144,19 @@ class Overlay:
             _text(frame, handedness, (190, 74), GREY)
         self._meter(frame, "L", st.pinch_index, 96, st.pinch_blocked, st.left_armed or st.left_down)
         self._meter(frame, "R", st.pinch_middle, 116, st.pinch_blocked, st.right_armed)
+        # Thumb to ring / pinky fingertip: the typing gestures (Enter / Backspace).
+        self._meter(frame, "Rg", st.pinch_ring, 136, st.pinch_blocked, st.ring_armed)
+        self._meter(frame, "Pk", st.pinch_pinky, 156, st.pinch_blocked, st.pinky_armed)
         if st.facing is not None:
             if st.pinch_blocked:
-                _text(frame, f"facing {st.facing:.2f}  turn palm to camera", (10, 144), ORANGE, 0.45)
+                _text(frame, f"facing {st.facing:.2f}  turn palm to camera", (10, 184), ORANGE, 0.45)
             else:
-                _text(frame, f"facing {st.facing:.2f}", (10, 144), GREY, 0.45)
+                _text(frame, f"facing {st.facing:.2f}", (10, 184), GREY, 0.45)
         if st.left_block:
             # Fingertips closed but no click: the reason, where the last action goes.
-            _text(frame, f"L: {st.left_block}", (10, 164), ORANGE, 0.4)
+            _text(frame, f"L: {st.left_block}", (10, 204), ORANGE, 0.4)
         elif st.last_action:
-            _text(frame, st.last_action, (10, 164), GREY, 0.45)
+            _text(frame, st.last_action, (10, 204), GREY, 0.45)
 
         if st.zoom_blocked:
             _shade(frame, 0, h - 44, w, h)
@@ -143,10 +166,15 @@ class Overlay:
             _text(frame, f"Zoom is off: {why} (see terminal)", (12, h - 18), MAGENTA, 0.48)
             return frame
 
-        # Bottom band: fist-hold progress (pause/resume), or the paused hint.
-        if st.fist_progress > 0 or st.paused:
+        # Bottom band: fist-hold progress (pause/resume), keyboard-pose progress, or the
+        # paused hint.
+        if st.fist_progress > 0 or st.paused or st.toggle_progress > 0 or st.kb_warn:
             _shade(frame, 0, h - 44, w, h)
-        if st.fist_progress > 0:
+        if st.toggle_progress > 0:
+            self._progress(frame, "keep holding to open the keyboard", st.toggle_progress)
+        elif st.kb_warn:
+            _text(frame, st.kb_warn, (12, h - 18), ORANGE, 0.42)
+        elif st.fist_progress > 0:
             bw = int((w - 40) * st.fist_progress)
             _text(frame, "keep holding to " + ("resume" if st.paused else "pause"),
                   (20, h - 26), WHITE, 0.5)
@@ -156,13 +184,85 @@ class Overlay:
             _text(frame, "PAUSED - hold a fist or press p to resume", (20, h - 18), RED, 0.55)
         return frame
 
+    def _progress(self, frame, text: str, progress: float) -> None:
+        h, w = frame.shape[:2]
+        _text(frame, text, (20, h - 26), WHITE, 0.5)
+        cv2.rectangle(frame, (20, h - 18), (w - 20, h - 8), GREY, 1)
+        cv2.rectangle(frame, (20, h - 18), (20 + int((w - 40) * progress), h - 8), YELLOW, -1)
+
+    def _draw_keyboard(self, frame: np.ndarray, st: Status, fps: float,
+                       latency_ms: float) -> np.ndarray:
+        """Keyboard mode: the keys over the camera image, the fingertip, and a band at
+        the bottom with what was typed."""
+        h, w = frame.shape[:2]
+        x0, x1, y0, y1 = self.layout.region
+        _shade(frame, int(x0 * w) - 4, int(y0 * h) - 4, int(x1 * w) + 4, int(y1 * h) + 4, 0.55)
+        shift = "shift" in st.kb_latched
+        for i, k in enumerate(self.layout.keys):
+            kx0, ky0, kx1, ky1 = k.rect
+            r = (int(kx0 * w) + 2, int(ky0 * h) + 2, int(kx1 * w) - 2, int(ky1 * h) - 2)
+            fill = None
+            if i == st.kb_flash:
+                fill = GREEN
+            elif i == st.kb_hover:
+                fill = YELLOW
+            elif ((k.kind == "mod" and k.name in st.kb_latched)
+                  or (k.kind == "caps" and st.kb_caps)
+                  or (k.name == "alt+tab" and st.kb_switching)):
+                fill = CYAN
+            if fill is not None:
+                cv2.rectangle(frame, r[:2], r[2:], fill, -1)
+            edge = GREY if k.row < self.layout.shortcut_rows else WHITE
+            cv2.rectangle(frame, r[:2], r[2:], edge, 1)
+            ink = BLACK if fill is not None else WHITE
+            if k.name in ("left", "up", "down", "right"):
+                _arrow(frame, r, k.name, ink)
+                continue
+            label = k.label
+            if k.kind == "char" and len(k.label) == 1:
+                # What the key will type now: Shift and Caps (letters only) applied.
+                upper = shift != (st.kb_caps and k.label.isalpha())
+                label = k.shifted if upper else k.label.lower()
+            scale = 0.5 if len(label) <= 2 else 0.4 if len(label) <= 5 else 0.34
+            (tw, th), _ = cv2.getTextSize(label, FONT, scale, 1)
+            cx, cy = (r[0] + r[2]) // 2, (r[1] + r[3]) // 2
+            _text(frame, label, (cx - tw // 2, cy + th // 2), ink, scale)
+        if st.tip is not None:
+            p = (int(st.tip[0] * w), int(st.tip[1] * h))
+            # A ring, so the label of the key under it stays readable.
+            cv2.circle(frame, p, 9, BLACK, 3, cv2.LINE_AA)
+            cv2.circle(frame, p, 9, MAGENTA, 2, cv2.LINE_AA)
+
+        # Bottom band: mode and timing, then what was typed (or a hint, a progress bar).
+        _shade(frame, 0, h - 52, w, h, 0.3)
+        fps_txt = f"{fps:4.1f} fps" if fps > 0 else "-- fps"
+        _text(frame, "KEYBOARD", (10, h - 32), YELLOW, 0.55, 2)
+        _text(frame, f"{fps_txt} {latency_ms:4.0f} ms", (125, h - 32), GREY, 0.42)
+        if st.left_block:
+            _text(frame, f"L: {st.left_block}", (260, h - 32), ORANGE, 0.4)
+        else:
+            _text(frame, f"hold {self.toggle_name} to close", (260, h - 32), GREY, 0.42)
+        if st.toggle_progress > 0:
+            cv2.rectangle(frame, (10, h - 18), (w - 10, h - 8), GREY, 1)
+            cv2.rectangle(frame, (10, h - 18), (10 + int((w - 20) * st.toggle_progress), h - 8),
+                          YELLOW, -1)
+        elif st.kb_warn:
+            _text(frame, st.kb_warn, (10, h - 10), ORANGE, 0.42)
+        else:
+            mods = " ".join(m.capitalize() for m in st.kb_latched)
+            text = st.kb_text[-48:]
+            line = (f"[{mods}] " if mods else "") + "> " + text + "_"
+            _text(frame, line, (10, h - 10), WHITE, 0.5)
+        return frame
+
     def _meter(self, frame, label: str, value: float | None, y: int,
                blocked: bool = False, armed: bool = False) -> None:
         """Pinch distance bar: fills as fingers close; ticks mark start/release.
         Grey while pinches are blocked because the hand is turned away. The label
         lights up green when the pinch is armed (the next close will click)."""
         x, width = 30, 150
-        _text(frame, label, (10, y + 9), GREEN if armed else GREY, 0.5, 2 if armed else 1)
+        size = 0.5 if len(label) == 1 else 0.36
+        _text(frame, label, (10, y + 9), GREEN if armed else GREY, size, 2 if armed else 1)
         cv2.rectangle(frame, (x, y), (x + width, y + 10), GREY, 1)
         top = 1.0
         if value is not None:

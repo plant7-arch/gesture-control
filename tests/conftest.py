@@ -17,9 +17,11 @@ from gesture_control.config import DEFAULTS, _deep_merge
 from gesture_control.controller import GestureController
 from gesture_control.features import (
     FIST,
+    HORNS,
     NONE,
     PALM,
     POINT,
+    THREE,
     TWO,
     HandFeatures,
 )
@@ -67,7 +69,17 @@ def pytest_report_header(config):
                      if config_mod.FROM_CHECKOUT else
                      f"installed ({config_mod.CONFIG_DIR}, {config_mod.DATA_ROOT})"),
         f"network test (pinned model URL): {net}",
+        f"keyboard: labels are for the US layout; GNOME's layout here: {_layout()}",
     ]
+
+
+def _layout() -> str:
+    from gesture_control.keyboard import gnome_layout
+
+    name = gnome_layout()
+    if name is None:
+        return "unknown (no GNOME session)"
+    return name if name == "us" else f"{name} (some keys type other characters than shown)"
 
 
 @pytest.fixture(autouse=True)
@@ -173,10 +185,15 @@ def rot_y(pts: np.ndarray, deg: float) -> np.ndarray:
 
 def feats(pose: str = POINT, pinch_index: float = 1.0, pinch_middle: float = 1.0,
           facing: float = 1.0, reach_index: float = 1.8,
-          reach_middle: float = 1.8) -> HandFeatures:
-    """HandFeatures for a given pose (the controller only reads these fields)."""
-    up = {POINT: {"index"}, TWO: {"index", "middle"},
-          PALM: {"index", "middle", "ring", "pinky"}, FIST: set(), NONE: {"index", "pinky"}}[pose]
+          reach_middle: float = 1.8, pinch_ring: float = 1.0, pinch_pinky: float = 1.0,
+          up=None) -> HandFeatures:
+    """HandFeatures for a given pose (the controller only reads these fields).
+    up: the fingers that are up, if not the pose's usual ones."""
+    if up is None:
+        up = {POINT: {"index"}, TWO: {"index", "middle"},
+              PALM: {"index", "middle", "ring", "pinky"}, FIST: set(),
+              NONE: {"index", "middle", "pinky"}, HORNS: {"index", "pinky"},
+              THREE: {"index", "middle", "ring"}}[pose]
     names = ("index", "middle", "ring", "pinky")
     return HandFeatures(
         finger_ratio={n: 1.4 if n in up else 0.7 for n in names},
@@ -185,6 +202,7 @@ def feats(pose: str = POINT, pinch_index: float = 1.0, pinch_middle: float = 1.0
         pinch_index=pinch_index, pinch_middle=pinch_middle,
         reach_index=reach_index, reach_middle=reach_middle,
         palm_size=1.0, facing=facing, pose=pose,
+        pinch_ring=pinch_ring, pinch_pinky=pinch_pinky,
     )
 
 
@@ -214,18 +232,22 @@ class Rig:
         self.events: list[str] = []
         self.actions: list[str] = []
         self.anchor = (0.5, 0.5)
+        self.tip = (0.5, 0.3)
         self.last = None
 
     def step(self, f: HandFeatures | None = None, anchor=None, palm: float = 0.16,
-             zoom=None, rebase: bool = False, **kw):
-        """One frame. f=None with no kwargs means 'no hand'. kwargs build feats()."""
+             zoom=None, rebase: bool = False, tip=None, **kw):
+        """One frame. f=None with no kwargs means 'no hand'. kwargs build feats().
+        tip: the index fingertip (camera fractions), kept until changed."""
         if f is None and kw:
             f = feats(**kw)
         if anchor is not None:
             self.anchor = anchor
+        if tip is not None:
+            self.tip = tip
         self.t += DT
         st = self.ctl.update(f, self.anchor if f is not None else None, self.t, palm,
-                             zoom, rebase=rebase)
+                             zoom, rebase=rebase, tip=self.tip if f is not None else None)
         self.events += st.events
         self.actions += st.actions
         self.last = st

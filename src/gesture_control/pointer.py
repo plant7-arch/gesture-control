@@ -225,12 +225,33 @@ def _event_node_by_name(name: str) -> str | None:
     return None if best is None else f"event{best}"
 
 
-class VirtualKeys:
-    """A tiny virtual keyboard for zoom: Ctrl (held while zooming with the wheel) and
-    Ctrl+= / Ctrl+- taps. Kept separate from the pointer so the pointer device's type
-    doesn't change; GNOME combines modifier keys across devices."""
+# Key names the virtual keyboard can send, and their evdev codes (US key positions:
+# GNOME turns them into characters with your keyboard layout).
+KEY_NAMES: dict[str, str] = {
+    **{c: f"KEY_{c.upper()}" for c in "abcdefghijklmnopqrstuvwxyz"},
+    **{d: f"KEY_{d}" for d in "0123456789"},
+    **{f"f{n}": f"KEY_F{n}" for n in range(1, 13)},
+    "grave": "KEY_GRAVE", "minus": "KEY_MINUS", "equal": "KEY_EQUAL",
+    "leftbrace": "KEY_LEFTBRACE", "rightbrace": "KEY_RIGHTBRACE",
+    "backslash": "KEY_BACKSLASH", "semicolon": "KEY_SEMICOLON",
+    "apostrophe": "KEY_APOSTROPHE", "comma": "KEY_COMMA", "dot": "KEY_DOT",
+    "slash": "KEY_SLASH", "space": "KEY_SPACE", "enter": "KEY_ENTER",
+    "backspace": "KEY_BACKSPACE", "tab": "KEY_TAB", "esc": "KEY_ESC",
+    "delete": "KEY_DELETE", "insert": "KEY_INSERT", "home": "KEY_HOME", "end": "KEY_END",
+    "pageup": "KEY_PAGEUP", "pagedown": "KEY_PAGEDOWN",
+    "left": "KEY_LEFT", "right": "KEY_RIGHT", "up": "KEY_UP", "down": "KEY_DOWN",
+    "shift": "KEY_LEFTSHIFT", "ctrl": "KEY_LEFTCTRL", "alt": "KEY_LEFTALT",
+    "super": "KEY_LEFTMETA",
+}
 
-    KEYS = ("ctrl", "equal", "minus")
+
+class VirtualKeys:
+    """A virtual keyboard: the air keyboard, the Enter / Backspace gestures, and zoom
+    (Ctrl held while zooming with the wheel, Ctrl+= / Ctrl+- taps). Kept separate from
+    the pointer so the pointer device's type doesn't change; GNOME combines modifier
+    keys across devices."""
+
+    KEYS = tuple(KEY_NAMES)
 
     def __init__(self, dry_run: bool = False, name: str = "gesture-control keys",
                  settle: float = 0.3):
@@ -242,12 +263,14 @@ class VirtualKeys:
         from evdev import ecodes as e
 
         self._e = e
-        self._code = {"ctrl": e.KEY_LEFTCTRL, "equal": e.KEY_EQUAL, "minus": e.KEY_MINUS}
-        self._ui = make_uinput({e.EV_KEY: list(self._code.values())}, name=name,
-                          vendor=0x1209, product=0x6764)
+        self._code = {k: getattr(e, code) for k, code in KEY_NAMES.items()}
+        self._ui = make_uinput({e.EV_KEY: sorted(set(self._code.values()))}, name=name,
+                               vendor=0x1209, product=0x6764)
         time.sleep(settle)
 
     def press(self, key: str) -> None:
+        if key not in KEY_NAMES:
+            raise ValueError(f"unknown key {key!r}")
         if key in self._down:
             return
         self._down.add(key)
@@ -261,6 +284,9 @@ class VirtualKeys:
 
     def is_down(self, key: str) -> bool:
         return key in self._down
+
+    def any_down(self) -> bool:
+        return bool(self._down)
 
     def tap(self, key: str) -> None:
         self.press(key)

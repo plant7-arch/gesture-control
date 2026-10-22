@@ -10,6 +10,12 @@ Modes
   SCROLL - "two" pose: hand movement scrolls, up/down and left/right, phone-style by
            default: the content follows the hand, and leaving the pose mid-swipe
            flings it. Each swipe sticks to one axis unless scroll.axis_lock is off
+  KEYBOARD - opened and closed by holding the "horns" pose (keyboard.toggle): the
+           index fingertip picks a key of the keyboard drawn in the preview, a
+           thumb + index pinch types it. The cursor, scrolling and zoom are off
+
+Outside the keyboard, an open hand with the thumb touching the ring or pinky
+fingertip types a key (Enter / Backspace by default, keyboard.gestures).
 
 Rules that keep it from misfiring
   * poses must be stable for `pose.debounce_frames` frames before they count
@@ -29,8 +35,9 @@ from enum import Enum
 from typing import Any
 
 from . import touchpad as tpm
-from .features import FIST, NONE, POINT, TWO, HandFeatures
+from .features import FIST, HORNS, NONE, POINT, THREE, TWO, HandFeatures
 from .filters import OneEuroFilter
+from .keyboard import Layout, Typer
 from .pointer import HI_RES_PER_NOTCH, VirtualKeys, VirtualPointer
 from .scrolling import Scroller
 
@@ -39,6 +46,14 @@ from .scrolling import Scroller
 # caught sooner was started by a misread frame in the middle of one drag, and stacking
 # on it would make the next fling overshoot.
 MIN_CATCH_AGE_S = 0.1
+
+# Air keyboard: a pinch bends the index finger, and the fingertip slides onto the next
+# key as the fingers close. So the key under the fingertip is frozen while an armed
+# pinch closes, for at most this long (a thumb resting half-closed doesn't freeze it
+# for good).
+KEY_FREEZE_MAX_S = 0.5
+KEY_FLASH_S = 0.2  # how long a typed key lights up in the preview
+PREVIEW_WARN_S = 4.0
 
 # With scroll.axis_lock, a swipe's axis is decided once the hand has moved this far
 # (frame heights, about 3 px at 480 px) from where the touch began. Until then nothing
@@ -57,6 +72,7 @@ class Mode(str, Enum):
     MOVE = "move"
     SCROLL = "scroll"
     ZOOM = "zoom"
+    KEYBOARD = "keyboard"
 
 
 @dataclass
@@ -81,6 +97,20 @@ class Status:
     zoom_blocked_state: str = ""      # the touchpad setting behind it ("disabled", ...)
     zoom_blocked_new: bool = False    # zoom was just found blocked: print the message once
     scroll_axis: str = ""             # scrolling: "vertical", "horizontal", "both" or ""
+    pinch_ring: float | None = None   # thumb-ring / thumb-pinky distances (palm lengths)
+    pinch_pinky: float | None = None
+    ring_armed: bool = False          # those pinches are armed (the next close types)
+    pinky_armed: bool = False
+    toggle_progress: float = 0.0      # holding the keyboard pose: 0..1
+    # Keyboard (mode KEYBOARD): indexes into Layout.keys, and what to show.
+    kb_hover: int | None = None       # key under the fingertip
+    kb_flash: int | None = None       # key just typed
+    kb_latched: tuple[str, ...] = ()  # one-shot modifiers waiting for the next key
+    kb_caps: bool = False
+    kb_switching: bool = False        # Alt held for the window switcher
+    kb_text: str = ""                 # the last characters typed (keyboard.echo)
+    kb_warn: str = ""                 # keys typed into the preview window itself
+    tip: tuple[float, float] | None = None  # smoothed index fingertip (camera fractions)
     last_action: str = ""
     # Actions this frame. events: the ones worth printing (-v), once per gesture.
     # actions: every action, including the frequent "quiet" ones (each scroll or zoom
@@ -297,6 +327,34 @@ class GestureController:
         self.fist_hold = float(cfg["pause"]["fist_hold_s"])
         self.lost_limit = int(cfg["safety"]["lost_hand_release_frames"])
 
+        # Keyboard. It needs the virtual keyboard (keys) to type, and the preview to aim.
+        kc = cfg["keyboard"]
+        self.typer = (Typer(keys, kc["repeat_delay_s"], kc["repeat_rate"],
+                            kc["alt_tab_hold_s"]) if keys is not None else None)
+        self.kb_enabled = (bool(kc["enabled"]) and keys is not None
+                           and bool(cfg["preview"]["enabled"]))
+        self.layout = Layout.from_config(cfg) if self.kb_enabled else None
+        self.kb_toggle_pose = HORNS if kc["toggle"] == "horns" else THREE
+        self.kb_toggle_hold = float(kc["toggle_hold_s"])
+        self.kb_echo = bool(kc["echo"])
+        self.tip_filter = OneEuroFilter(**kc["filter"])
+        self._tip: tuple[float, float] | None = None
+        self._kb_hover: int | None = None
+        self._kb_freeze_t: float | None = None
+        self._kb_pressed: int | None = None  # key typed by the pinch that's still closed
+        self._kb_flash: tuple[int | None, float] = (None, -1e9)
+        self._kb_warn_until = -1e9
+        self._toggle_start: float | None = None
+        self._toggle_fired = False
+        # Typing gestures: thumb to ring / pinky fingertip, with the other fingers up.
+        g = kc["gestures"]
+        self.gesture_keys = {
+            f: (None if self.typer is None or g[f"{f}_pinch"] == "none"
+                else g[f"{f}_pinch"]) for f in ("ring", "pinky")}
+        self.ring = PinchDetector(pc["start"], pc["release"], pc["confirm_frames"])
+        self.pinky = PinchDetector(pc["start"], pc["release"], pc["confirm_frames"])
+        self._gesture_held: str | None = None
+
         self.mode = Mode.IDLE
         self.paused = bool(cfg["pause"]["start_paused"])
         self._lost = 0
@@ -330,6 +388,8 @@ class GestureController:
         """Time-based housekeeping; also call this when no camera frame arrived."""
         if self.touchpad is not None:
             self.touchpad.tick()
+        if self.typer is not None:
+            self.typer.tick(self._now)  # lets go of Alt after Alt+Tab
 
     def stalled(self, t: float) -> Status:
         """The camera has sent no frames for a while (call this when a read times out).
@@ -347,10 +407,25 @@ class GestureController:
         self.pose.reset()
         self.zoom_debounce.reset()
         self._fist_start, self._fist_fired = None, False
-        if self.mode != Mode.IDLE or self.pointer.any_down():
+        self._toggle_start, self._toggle_fired = None, False
+        typing = self._release_typing()
+        if self.mode == Mode.KEYBOARD:  # the keyboard stays open
+            if typing:
+                self._act("camera stalled: released")
+        elif self.mode != Mode.IDLE or self.pointer.any_down() or typing:
             self._enter(Mode.IDLE)
             self._act("camera stalled: released")
         return self._status(Status(paused=self.paused))
+
+    def typed_into_preview(self) -> None:
+        """app.py saw keys the keyboard typed arrive in the preview window: it had the
+        focus. Say so in the preview for a few seconds."""
+        self._kb_warn_until = self._now + PREVIEW_WARN_S
+
+    def typed_recently(self, now: float, within: float = 0.5) -> bool:
+        """Did the virtual keyboard send a key within `within` s of `now` (real time,
+        time.monotonic)? A key the preview window receives then is one of ours."""
+        return self.typer is not None and now - self.typer.sent_at <= within
 
     def toggle_pause(self) -> None:
         self.paused = not self.paused
@@ -360,7 +435,8 @@ class GestureController:
 
     def update(self, feats: HandFeatures | None, anchor: tuple[float, float] | None,
                t: float, palm: float | None = None,
-               zoom: tuple[bool, float] | None = None, rebase: bool = False) -> Status:
+               zoom: tuple[bool, float] | None = None, rebase: bool = False,
+               tip: tuple[float, float] | None = None) -> Status:
         """palm: palm length (wrist to middle knuckle) in camera-frame widths. Relative
         mode measures hand movement in palm lengths, so it feels the same at any
         distance from the camera.
@@ -370,7 +446,8 @@ class GestureController:
         turn the jump into cursor or scroll movement, and disarm pinches.
         t: when the frame was captured (app.py passes the camera's timestamp). Time
         never runs backwards here: a frame captured just before a stalled() call is
-        given that call's time."""
+        given that call's time.
+        tip: the index fingertip in camera-frame fractions (picks the keyboard key)."""
         t = max(t, self._now)
         st = Status(paused=self.paused)
         self._events = []
@@ -396,9 +473,15 @@ class GestureController:
             if self.mode == Mode.SCROLL and not self._scroll_lifted:
                 self._lift(t, prev_t)  # hand left the view mid-swipe: same as lifting the finger
             self._lost += 1
-            if self._lost >= self.lost_limit and (self.mode != Mode.IDLE or self.pointer.any_down()):
-                self._enter(Mode.IDLE)
-                self._act("hand lost: released")
+            self._toggle_start, self._toggle_fired = None, False
+            if self._lost >= self.lost_limit:
+                typing = self._release_typing()
+                if self.mode == Mode.KEYBOARD:  # the keyboard stays open
+                    if typing:
+                        self._act("hand lost: released")
+                elif self.mode != Mode.IDLE or self.pointer.any_down() or typing:
+                    self._enter(Mode.IDLE)
+                    self._act("hand lost: released")
             self._fist_start, self._fist_fired = None, False
             return self._status(st)
 
@@ -418,6 +501,7 @@ class GestureController:
         pose = self.pose.update(raw)
         st.pose = pose
         st.pinch_index, st.pinch_middle = feats.pinch_index, feats.pinch_middle
+        st.pinch_ring, st.pinch_pinky = feats.pinch_ring, feats.pinch_pinky
 
         # Fist hold -> toggle pause (works while paused too).
         if pose == FIST and not self.pointer.is_down("left"):
@@ -435,12 +519,18 @@ class GestureController:
         if self.paused:
             self.left.reset()
             self.right.reset()
+            self.ring.reset()
+            self.pinky.reset()
+            self._toggle_start, self._toggle_fired = None, False
             if self.mode == Mode.ZOOM:
                 self._enter(Mode.IDLE)
             return self._status(st)
 
-        # Two-hand zoom takes priority over every one-hand gesture.
-        if self.zoom_enabled:
+        # Holding the keyboard pose opens or closes the keyboard.
+        st.toggle_progress = self._toggle_hold(pose, feats, t)
+
+        # Two-hand zoom takes priority over every one-hand gesture (but not the keyboard).
+        if self.zoom_enabled and self.mode != Mode.KEYBOARD:
             # Never start a zoom in the middle of a drag: it would drop what's being dragged.
             dragging = self.pointer.is_down("left") and self.mode != Mode.ZOOM
             both = zoom is not None and zoom[0] and not dragging
@@ -484,6 +574,13 @@ class GestureController:
             feats.pinch_middle, facing_ok and not self.left.active,
             feats.reach_middle >= self.right_min_reach)
         st.left_armed, st.right_armed = self.left.armed, self.right.armed
+        self._typing_gestures(feats, facing_ok, t)
+        st.ring_armed, st.pinky_armed = self.ring.armed, self.pinky.armed
+
+        if self.mode == Mode.KEYBOARD:
+            self._keyboard(feats, tip, l_start, l_end, t)
+            st.left_block = self._left_block(feats, pose, facing_ok)
+            return self._status(st)
 
         # Mode selection.
         # A pinch confirmed this frame counts as a drag, so it can't lose a race with a
@@ -495,7 +592,7 @@ class GestureController:
             target = Mode.MOVE
         elif pose == TWO:
             target = Mode.SCROLL
-        elif pose == NONE:
+        elif pose in (NONE, HORNS, THREE):  # in between, or the keyboard pose
             target = self.mode
         else:  # palm, fist
             target = Mode.IDLE
@@ -555,6 +652,106 @@ class GestureController:
                 self._act(f"left click blocked: {st.left_block}")
         return self._status(st)
 
+    # -- keyboard -------------------------------------------------------------
+    def _toggle_hold(self, pose: str, feats: HandFeatures, t: float) -> float:
+        """Count how long the keyboard pose is held; open or close the keyboard once
+        it's held long enough. Returns the progress (0..1) for the preview."""
+        busy = self.pointer.is_down("left") or (
+            # "three" is also what the hand shows while the thumb touches the pinky
+            # (Backspace): that mustn't count towards opening the keyboard.
+            self.kb_toggle_pose == THREE and feats.pinch_pinky < self.pinky.release_t)
+        if not self.kb_enabled or pose != self.kb_toggle_pose or busy:
+            self._toggle_start, self._toggle_fired = None, False
+            return 0.0
+        if self._toggle_start is None:
+            self._toggle_start = t
+        held = t - self._toggle_start
+        if held >= self.kb_toggle_hold and not self._toggle_fired:
+            self._toggle_fired = True
+            if self.mode == Mode.KEYBOARD:
+                self._enter(Mode.IDLE)
+                self._act("keyboard closed")
+            else:
+                self._enter(Mode.KEYBOARD)
+                self._act("keyboard open")
+            self._mode_since = t
+        return 0.0 if self._toggle_fired else min(held / self.kb_toggle_hold, 1.0)
+
+    def _keyboard(self, feats: HandFeatures, tip: tuple[float, float] | None,
+                  l_start: bool, l_end: bool, t: float) -> None:
+        """One frame with the keyboard open: pick the key under the fingertip, type it
+        on a pinch, repeat it while the pinch is held."""
+        if tip is not None:
+            p = self.tip_filter((float(tip[0]), float(tip[1])), t)
+            self._tip = (float(p[0]), float(p[1]))
+        # Fingers closing on an armed pinch (or closed on one that typed): keep the key.
+        closing = self.left.active or (self.left.armed
+                                       and feats.pinch_index < self.left.release_t)
+        if closing:
+            if self._kb_freeze_t is None:
+                self._kb_freeze_t = t
+            frozen = self.left.active or t - self._kb_freeze_t < KEY_FREEZE_MAX_S
+        else:
+            self._kb_freeze_t = None
+            frozen = False
+        if not frozen:
+            self._kb_hover = None if self._tip is None else self.layout.hit(*self._tip)
+        if l_start:
+            if self._kb_hover is not None:
+                self._act(self.typer.press(self.layout.keys[self._kb_hover], t))
+                self._kb_pressed = self._kb_hover
+                self._kb_flash = (self._kb_hover, t)
+            else:
+                self._act("pinch outside the keyboard", quiet=True)
+        elif self.left.active and self._kb_pressed is not None:
+            self.typer.hold(t)
+        if l_end:
+            self.typer.lift()
+            self._kb_pressed = None
+
+    def _typing_gestures(self, feats: HandFeatures, facing_ok: bool, t: float) -> None:
+        """Thumb to the ring or pinky fingertip, the other fingers up: type that
+        gesture's key (keyboard.gestures). Same arming as clicks: the fingers must be
+        seen apart before a close counts."""
+        ext = feats.extended
+        allowed = (self.mode in (Mode.IDLE, Mode.MOVE, Mode.KEYBOARD)
+                   and not self.pointer.is_down("left") and facing_ok)
+        for name, det, ratio, other, needs in (
+                ("ring", self.ring, feats.pinch_ring, feats.pinch_pinky,
+                 ("index", "middle", "pinky")),
+                ("pinky", self.pinky, feats.pinch_pinky, feats.pinch_ring,
+                 ("index", "middle", "ring"))):
+            spec = self.gesture_keys[name]
+            if spec is None:
+                continue
+            ok = allowed and all(ext[f] for f in needs)
+            # The thumb nearer this fingertip than the other one: the pinch is this one.
+            _, started, ended = det.update(ratio, ok, ratio < other)
+            if started and not self.left.active:
+                self._act(self.typer.press_spec(spec, t))
+                self._gesture_held = name
+            elif det.active and self._gesture_held == name:
+                self.typer.hold(t)
+            if ended and self._gesture_held == name:
+                self.typer.lift()
+                self._gesture_held = None
+
+    def _release_typing(self) -> bool:
+        """Let go of every key (Alt for the window switcher, a repeating key). Returns
+        whether anything was held."""
+        if self.typer is None:
+            return False
+        held = (self.typer.switching or self.typer._held is not None
+                or self.typer.keys.any_down())
+        if self.mode != Mode.ZOOM:  # zoom's Ctrl is released when the zoom ends
+            self.typer.release_all()
+        self.left.reset()
+        self.ring.reset()
+        self.pinky.reset()
+        self._kb_pressed = self._gesture_held = None
+        self._kb_freeze_t = None
+        return held
+
     # -- internals ------------------------------------------------------------
     def _pinch_posture(self, feats: HandFeatures) -> bool:
         """Thumb and index tips together with the index reaching forward: a pinch."""
@@ -567,7 +764,7 @@ class GestureController:
         if feats.pinch_index >= self.left.start or self.pointer.is_down("left"):
             return ""  # fingers apart, or clicking (a pinch outside MOVE never clicks)
         reach_low = feats.reach_index < self.min_reach
-        if self.mode != Mode.MOVE:
+        if self.mode not in (Mode.MOVE, Mode.KEYBOARD):
             return (f"not pointing (pose: {pose})"
                     + (f", index bent into a fist (reach {feats.reach_index:.2f} < "
                        f"{self.min_reach:.2f})" if reach_low else ""))
@@ -583,6 +780,16 @@ class GestureController:
     def _enter(self, mode: Mode) -> None:
         if self.mode == Mode.MOVE and mode != Mode.MOVE:
             self.pointer.release_all()
+        if self.mode == Mode.KEYBOARD and mode != Mode.KEYBOARD:
+            self.typer.release_all()
+            self.typer.latched.clear()
+            self._kb_hover = self._kb_pressed = self._kb_freeze_t = None
+            self._tip = None
+        if mode == Mode.KEYBOARD:
+            self.pointer.release_all()
+            self._stop_fling()
+            self.tip_filter.reset()
+            self._tip = self._kb_hover = None
         if self.mode == Mode.ZOOM and mode != Mode.ZOOM:
             if self.keys is not None:
                 self.keys.release_all()
@@ -640,6 +847,7 @@ class GestureController:
         self._rel_rem = [0.0, 0.0]
         self._new_touch()
         self._scroll_hist.clear()
+        self.tip_filter.reset()
         if not self.pointer.is_down("left"):
             self.left.reset()
         self.right.reset()
@@ -1035,4 +1243,16 @@ class GestureController:
         if self.mode == Mode.SCROLL:
             st.scroll_axis = {"x": "horizontal", "y": "vertical", "both": "both",
                               None: ""}[self._scroll_axis]
+        if self.mode == Mode.KEYBOARD:
+            st.kb_hover = self._kb_hover
+            idx, at = self._kb_flash
+            st.kb_flash = idx if self._now - at < KEY_FLASH_S else None
+            st.kb_latched = tuple(sorted(self.typer.latched))
+            st.kb_caps = self.typer.caps
+            st.kb_switching = self.typer.switching
+            st.kb_text = self.typer.text if self.kb_echo else ""
+            st.tip = self._tip
+        if self._now < self._kb_warn_until:
+            st.kb_warn = ("Typing went into this window: pinch-click into the app "
+                          "you want to type in")
         return st

@@ -218,6 +218,37 @@ phone:
                         #   back by itself. false: stop the app instead
   extra_args: []        # more scrcpy options, e.g. [--camera-ar=4:3]
 
+keyboard:
+  # The air keyboard (README > Keyboard). Hold the toggle pose about a second to open
+  # it over the preview; point at a key with your index fingertip and pinch thumb +
+  # index to type it. Hold the pose again to close it. The labels are US layout.
+  enabled: true
+  toggle: horns         # horns: index + pinky up (middle and ring curled)
+                        #   | three: index, middle and ring up (pinky curled)
+  toggle_hold_s: 0.8    # hold the pose this long to open / close the keyboard
+  region:               # where the keyboard sits in the camera picture (0..1). Keep it
+    x_min: 0.04         #   in the upper part: your hand is below the fingertip, and
+    x_max: 0.96         #   the whole hand must stay in view
+    y_min: 0.06
+    y_max: 0.56
+  shortcuts: [esc, tab, ctrl+z, ctrl+x, ctrl+c, ctrl+v, ctrl+a, ctrl+s, ctrl+f, alt+tab, super]
+                        # the top row; up to 16 keys or shortcuts ([] for no row)
+  repeat_delay_s: 0.5   # keep pinching Backspace, Del, Space or an arrow: it repeats
+  repeat_rate: 10       #   after this delay, this many times a second
+  alt_tab_hold_s: 1.5   # Alt+Tab keeps Alt held (window switcher open) this long
+                        #   after the last Alt+Tab, then picks the window
+  echo: true            # show the last characters typed in the preview
+                        #   (false: e.g. when typing passwords)
+  filter:               # smoothing of the fingertip that picks the key (One Euro)
+    min_cutoff: 1.5
+    beta: 5.0
+    d_cutoff: 1.0
+  gestures:
+    # Open hand (index and middle up), touch the thumb to a fingertip. Any key or
+    # shortcut (enter, backspace, esc, ctrl+z, ...), or none to turn it off.
+    ring_pinch: enter
+    pinky_pinch: backspace
+
 preview:
   enabled: true
   window_name: gesture-control

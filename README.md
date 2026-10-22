@@ -317,6 +317,7 @@ Useful options:
 | `--scroll-test` | Scroll down, up, right, then left under the mouse pointer, the way the app scrolls (no camera), then exit: checks that scrolling reaches your apps |
 | `--scroll-method touchpad` / `wheel` | Scroll with a touchpad swipe or the mouse wheel this time (overrides `scroll.method`) |
 | `--zoom-test` | Zoom in, then out, under the mouse pointer (a real touchpad pinch by default; no camera), then exit |
+| `--keyboard-test` | Type a test sentence into the window you click into, through the virtual keyboard (no camera), then exit. See [Keyboard](#keyboard) |
 | `--start-paused` | Start paused; hold a fist ~1 s to begin |
 | `--no-preview` | Run without the camera window (Ctrl+C, or `kill`, to quit) |
 | `-v` | Print every action to the terminal, and how long startup took |
@@ -330,7 +331,8 @@ the preview usually appears within about a second. If startup takes longer than 
 second, the window opens early with a "Starting camera and hand tracker..." message. With
 `-v`, the app prints how long each part took.
 
-In the preview window: `q` / `Esc` quits, `p` toggles pause. The app also shuts down
+In the preview window: `q` / `Esc` quits, `p` toggles pause (keys the [keyboard](#keyboard)
+types into the preview by mistake are ignored, so a typed `q` doesn't quit). The app also shuts down
 cleanly (buttons and virtual fingers released, camera settings put back) when it's
 stopped with Ctrl+C, `kill`, or by closing its terminal, including during the first
 start's model download (the partial download is removed). While it's shutting down, a
@@ -360,6 +362,9 @@ affected afterwards.
 | ...flick again quickly while it glides | Stack: the new fling adds the glide's speed |
 | Two hands, both index fingers up: move apart / together | Zoom in / out, like a touchpad pinch |
 | Open palm | Neutral: nothing happens |
+| ...touch thumb to ring fingertip (other fingers up) | Enter |
+| ...touch thumb to pinky fingertip (other fingers up) | Backspace (keep touching: repeats) |
+| Horns (index + pinky up) held ~1 s | Open / close the [keyboard](#keyboard) |
 | Fist held ~1 s | Pause / resume everything |
 
 The cursor works like a touchpad (relative mode, the default): it follows your hand's
@@ -570,6 +575,100 @@ tracking fast, so a zoom can take about 0.2 seconds to start.
 | Zoom starts too slowly | `tracker:` `second_hand_check_every: 2` (uses more CPU with one hand) |
 | Don't need zoom | `zoom:` `enabled: false` and `tracker:` `num_hands: 1` |
 
+## Keyboard
+
+Type with your hand: hold **horns** (index and pinky up, middle and ring curled, the
+thumb wherever is comfortable) for about a second. A bar fills along the bottom of the
+preview, then a keyboard appears over the camera picture.
+
+![The keyboard in the preview: the hovered key in yellow, latched Shift in blue, what was typed at the bottom](docs/keyboard/preview.png)
+
+1. **Point at a key with your index fingertip.** The key under it turns yellow, and a
+   ring marks your fingertip. The fingertip's place *in the camera picture* picks the key,
+   so what you see is what you hit; the cursor doesn't move while the keyboard is open.
+   Keep the keyboard in the upper part of the picture: your hand is below the fingertip,
+   and the whole hand has to stay in view.
+2. **Pinch thumb + index to type it.** Same as a click: open the fingers, then close
+   them. The key flashes green and goes to **the window that has the focus**, so
+   pinch-click into the app you want to type in *before* opening the keyboard.
+3. **Hold horns again to close it.** A fist (pause) closes it too.
+
+What the keys do:
+
+- **Shift, Ctrl, Alt** are one-shot: tap one (it turns blue) and it applies to the next
+  key, then lets go. Tap it again to cancel. They combine with the shortcut row, so
+  Shift then Ctrl+Z is Ctrl+Shift+Z (redo). The key caps show what will be typed (Shift
+  shows `!@#` and capitals).
+- **Caps** types capitals until you tap it again (only letters; Shift with Caps gives a
+  small letter).
+- **Holding the pinch** on Bksp, Del, Space or an arrow repeats it after half a second.
+  Other keys type once however long you hold.
+- **The top row** has shortcuts: Esc, Tab, Ctrl+Z, Ctrl+X, Ctrl+C, Ctrl+V, Ctrl+A,
+  Ctrl+S, Ctrl+F, Alt+Tab and Super (the Activities overview). Home, End and the arrows
+  are on the bottom row. Change the top row with `keyboard.shortcuts`, e.g.
+  `[esc, ctrl+z, ctrl+shift+t, f5]` (up to 16).
+- **Alt+Tab** works like on a real keyboard: it keeps Alt held, so GNOME's window switcher
+  stays open, and each further Alt+Tab moves to the next window. The window is picked
+  1.5 s after the last Alt+Tab (`keyboard.alt_tab_hold_s`), or at once when you type any
+  other key or close the keyboard.
+- **The bottom band** shows what you typed recently (Backspace removes a character,
+  Enter clears the line). It only knows what *it* typed, not what the app did with it.
+  Turn it off for passwords: `keyboard.echo: false`.
+
+The fingers close a little sideways when you pinch, which can slide the fingertip onto
+the next key. So once you've opened your fingers (the pinch is armed) and start closing
+them, the key stays selected until the pinch ends; if no pinch follows within half a
+second, the selection follows your fingertip again.
+
+While the keyboard is open, the hand being lost (or the camera stopping) lets go of any
+held key (Alt for the switcher) but leaves the keyboard open.
+
+### Enter and Backspace without the keyboard
+
+Two gestures type a key at any time (not while dragging or scrolling): open your hand,
+then touch the **thumb to the ring fingertip** for **Enter**, or to the **pinky
+fingertip** for **Backspace** (keep touching: it repeats). The other fingers stay up;
+the thumb resting on curled fingers while you point never counts. Like clicks, the thumb
+has to be seen away from the finger first. The `Rg` and `Pk` bars in the preview show
+how close the thumb is (same ticks as the click bars, green label = armed).
+
+Other keys or shortcuts, or off:
+
+```yaml
+keyboard:
+  gestures:
+    ring_pinch: enter        # e.g. esc, ctrl+z, alt+tab
+    pinky_pinch: none        # turned off
+```
+
+### Check it works
+
+1. **The virtual keyboard reaches your apps (no camera):** run
+   `uv run gesture-control --keyboard-test`, then within 3 seconds click into Text Editor.
+   It types `Hello from gesture-control 123!`, then Backspace and `?`: the editor must
+   show `Hello from gesture-control 123?`. To see what GNOME receives, run
+   `sudo libinput debug-events --show-keycodes` in a second terminal first: the lines
+   come from the device "gesture-control keys".
+2. **The poses register:** start the app and watch `pose:` in the preview: horns shows
+   `pose: horns`. Touching the thumb to the ring or pinky fingertip fills the `Rg` / `Pk`
+   bar past the left tick.
+3. **Typing:** open Text Editor, pinch-click into it, hold horns, and type a word.
+
+The labels are for the **US layout**: the virtual keyboard sends key positions, and GNOME
+turns them into characters with your layout. With another layout, the app says so at
+startup, and some keys type other characters than they show.
+
+| Problem | Fix |
+|---|---|
+| `Typing went into this window` in the preview | The preview window had the focus: pinch-click into the app you want to type in. Keys that land in the preview are ignored (a typed `q` doesn't quit) |
+| The keyboard doesn't open | Watch `pose:` while holding horns: if it shows `palm` or `none`, the middle or ring finger isn't curled enough. `keyboard.toggle: three` uses index, middle and ring up instead (keep the thumb off the pinky: that's Backspace). Holding horns while dragging doesn't count |
+| Hard to reach the top or bottom row | Move the keyboard: `keyboard.region` (`y_min` / `y_max`, 0 = top of the picture); the hand must stay in view below the fingertip |
+| Keys jitter between neighbours | Steadier fingertip: lower `keyboard.filter.min_cutoff` (e.g. `0.8`) |
+| A key is typed twice | The pinch opened and closed again: open the fingers fully between keys, or raise `pinch.confirm_frames` |
+| Enter or Backspace fire on their own | Lower `pinch.start`, or turn the gesture off (`none`) |
+| `--keyboard-test` types nothing | Check `/dev/uinput` access ([Setup, step 3](#3-virtual-input-uinput)); in `sudo libinput debug-events --show-keycodes`, no "gesture-control keys" lines means GNOME doesn't see the device: tell me what it prints |
+| No keyboard with `--no-preview` | It needs the preview to aim; Enter and Backspace still work |
+
 ## Configuration
 
 ### How the config files work
@@ -703,7 +802,7 @@ uv run gesture-control --phone --phone-facing front --phone-size 1280x720
 The other direction works too: `--dry-run` and `-v` are the settings `run.dry_run` and
 `run.verbose`, so `local.yaml` can turn them on for every run. Only these stay
 command-line only, because they aren't settings: `--pointer-test`, `--scroll-test`,
-`--zoom-test`, `--calibrate` and `--calibrate-trackball` (one-off actions: as a setting,
+`--zoom-test`, `--keyboard-test`, `--calibrate` and `--calibrate-trackball` (one-off actions: as a setting,
 every start would run the test and exit), `--config` (it chooses the files, so it can't
 be inside one) and `--version`.
 
@@ -733,6 +832,11 @@ be inside one) and `--version`.
 | Zoom with Ctrl + wheel instead of a touchpad pinch | `zoom:` `method: ctrl_scroll` |
 | Zoom with Ctrl+= / Ctrl+− | `zoom:` `method: keys` |
 | Use a different camera | `camera:` `index: 2` |
+| Open the keyboard with three fingers instead of horns | `keyboard:` `toggle: three` |
+| Open / close the keyboard faster | `keyboard:` `toggle_hold_s: 0.5` |
+| Different shortcuts on the keyboard's top row | `keyboard:` `shortcuts: [esc, ctrl+z, ctrl+shift+t, f5]` |
+| Hide what I type (passwords) | `keyboard:` `echo: false` |
+| Turn off the Backspace gesture | `keyboard:` `gestures:` `pinky_pinch: none` |
 
 ### All settings
 
@@ -891,6 +995,23 @@ Absolute mode only:
 | `run.dry_run` | `--run-dry-run` | `false` | Print the actions (clicks, movement, keys) instead of performing them; no virtual devices are created. Short: `--dry-run` |
 | `run.verbose` | `--run-verbose` | `false` | Print every action, and scrcpy's messages with the phone. Short: `-v` |
 
+#### `keyboard` (air keyboard, Enter / Backspace gestures)
+
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `keyboard.enabled` | `--keyboard-enabled` | `true` | The air keyboard. Off, and with `--no-preview`, holding the toggle pose does nothing; the gestures below still work |
+| `keyboard.toggle` | `--keyboard-toggle` | `horns` | Pose to hold to open / close it: `horns` (index + pinky up) or `three` (index, middle and ring up) |
+| `keyboard.toggle_hold_s` | `--keyboard-toggle-hold-s` | `0.8` | How long to hold it. Shorter poses (a hand opening or closing passes through them) don't count |
+| `keyboard.region.x_min`, `x_max`, `y_min`, `y_max` | `--keyboard-region-x-min`, `--keyboard-region-x-max`, `--keyboard-region-y-min`, `--keyboard-region-y-max` | `0.04`, `0.96`, `0.06`, `0.56` | Where the keyboard sits in the camera picture (0..1, 0 = left / top); at least 0.3 wide and 0.2 high |
+| `keyboard.shortcuts` | `--keyboard-shortcuts` | `[esc, tab, ctrl+z, ctrl+x, ctrl+c, ctrl+v, ctrl+a, ctrl+s, ctrl+f, alt+tab, super]` | The top row: up to 16 keys or shortcuts (`[]`: no top row). Keys are named like `a`, `5`, `f5`, `enter`, `esc`, `tab`, `backspace`, `delete`, `home`, `end`, `pageup`, `left`, or characters like `=` and `/`; shortcuts join them with `+` after `ctrl`, `alt`, `shift`, `super` |
+| `keyboard.repeat_delay_s` | `--keyboard-repeat-delay-s` | `0.5` | Holding the pinch on Bksp, Del, Space or an arrow repeats it after this long... |
+| `keyboard.repeat_rate` | `--keyboard-repeat-rate` | `10` | ...this many times a second |
+| `keyboard.alt_tab_hold_s` | `--keyboard-alt-tab-hold-s` | `1.5` | Alt+Tab keeps Alt held (switcher open) this long after the last Alt+Tab, then picks the window |
+| `keyboard.echo` | `--keyboard-echo` | `true` | Show the last characters typed at the bottom of the preview |
+| `keyboard.filter.min_cutoff`, `beta`, `d_cutoff` | `--keyboard-filter-min-cutoff`, `--keyboard-filter-beta`, `--keyboard-filter-d-cutoff` | `1.5`, `5.0`, `1.0` | Smoothing of the fingertip that picks the key (One Euro filter): lower `min_cutoff` = steadier, more lag |
+| `keyboard.gestures.ring_pinch` | `--keyboard-gestures-ring-pinch` | `enter` | Key for thumb to ring fingertip (other fingers up): a key or shortcut as above, or `none` |
+| `keyboard.gestures.pinky_pinch` | `--keyboard-gestures-pinky-pinch` | `backspace` | Same for thumb to pinky fingertip |
+
 #### `pause`, `safety`, `preview`
 
 | Setting | Option | Default | What it does |
@@ -909,6 +1030,9 @@ The preview shows live values that help you choose settings:
 - **L / R bars**: thumb–index and thumb–middle pinch distances. The white ticks are
   `pinch.start` and `pinch.release`. If clicks don't register, raise `start`; if they
   fire on their own, lower it.
+- **Rg / Pk bars**: thumb–ring and thumb–pinky distances, for Enter and Backspace
+  ([Keyboard](#enter-and-backspace-without-the-keyboard)). Same ticks; the label turns
+  green when the gesture is armed (open hand, thumb seen away from the finger).
 - **facing**: how squarely your hand faces the camera (1 = square on, 0 = edge-on).
   New pinches only start above `pinch.min_facing` (0.6); below it the bars turn grey,
   because a turned hand makes fingertips line up and look touching when they aren't.
@@ -948,7 +1072,10 @@ uv run pytest
 The tests need no camera, `/dev/uinput` or desktop: the virtual devices run in dry-run
 mode and record what they would have sent, and hands are fed in frame by frame on a
 fake 30 fps clock. They cover the model download, pose detection, pinch arming, clicks,
-double clicks, drags, scrolling and flings (up/down and sideways, with the axis lock), pause, two-hand zoom, cursor movement in
+double clicks, drags, scrolling and flings (up/down and sideways, with the axis lock), pause, two-hand zoom, the
+keyboard (layout, typing with Shift, Caps and repeat, Alt+Tab, the horns toggle, the
+fingertip slipping onto the next key as a pinch closes, the Enter / Backspace gestures,
+keys landing in the preview window, and its drawing), cursor movement in
 both modes, the touchpad-swipe scrolling (finger directions, re-grips, lifting only
 when still), config loading and validation, where config and the model live (project
 folder or installed), the two-hand tracking switch (with fake trackers), clean shutdown
@@ -967,7 +1094,8 @@ reason, at the end of the run.
 The header at the top of the run shows the app version and library versions, whether
 the hand model is downloaded and verified, and whether this computer has a writable
 `/dev/uinput` and a camera. The tests don't need those two; they're there so one
-glance tells you whether the app itself can run.
+glance tells you whether the app itself can run. The last line shows your GNOME keyboard
+layout, since the keyboard's labels are for the US layout.
 
 ## Layout
 
@@ -975,6 +1103,7 @@ glance tells you whether the app itself can run.
 tests/                        automated tests (uv run pytest)
 docs/scroll/                  scrolling pictures and animations (README)
 docs/zoom/                    zoom picture (README)
+docs/keyboard/                keyboard picture (README)
 config/gestures.yaml          settings (overwritten by new builds)
 config/local.yaml             your overrides (optional; never in a build, git-ignored)
 config/calibration.yaml       written by --calibrate and --calibrate-trackball (same)
@@ -992,7 +1121,8 @@ src/gesture_control/
   model.py        hand model download and SHA-256 check
   features.py     finger states, pinch distances, pose classification
   filters.py      One Euro filter
-  controller.py   gesture state machine (modes, debounce, pinch, pause)
-  pointer.py      uinput virtual mouse
+  controller.py   gesture state machine (modes, debounce, pinch, pause, keyboard)
+  keyboard.py     air keyboard: layout, typing, Alt+Tab, key repeat
+  pointer.py      uinput virtual mouse and keyboard
   overlay.py      preview window drawing
 ```

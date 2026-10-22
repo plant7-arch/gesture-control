@@ -35,6 +35,8 @@ POINT = "point"   # index up, others down       -> move cursor
 TWO = "two"       # index + middle up           -> scroll
 PALM = "palm"     # all four fingers up         -> neutral
 FIST = "fist"     # all four fingers curled     -> hold to pause/resume
+HORNS = "horns"   # index + pinky up            -> hold to open / close the keyboard
+THREE = "three"   # index + middle + ring up    -> the other choice for that (keyboard.toggle)
 NONE = "none"     # anything else / in between  -> keep current mode
 
 
@@ -50,6 +52,8 @@ class HandFeatures:
     palm_size: float
     facing: float        # 1 = palm (or back of hand) square to the camera, 0 = edge-on
     pose: str
+    pinch_ring: float = 1.0   # dist(thumb tip, ring tip) / palm size
+    pinch_pinky: float = 1.0  # dist(thumb tip, pinky tip) / palm size
 
 
 def _d(a: np.ndarray, b: np.ndarray) -> float:
@@ -66,6 +70,10 @@ def classify_pose(extended: dict[str, bool], curled: dict[str, bool]) -> str:
         return POINT
     if ext[0] and ext[1] and not ext[2] and not ext[3]:
         return TWO
+    if ext[0] and not ext[1] and not ext[2] and ext[3]:
+        return HORNS
+    if ext[0] and ext[1] and ext[2] and not ext[3]:
+        return THREE
     return NONE
 
 
@@ -100,6 +108,8 @@ def compute_features(pts: np.ndarray, extend_ratio: float, curl_ratio: float) ->
         palm_size=palm,
         facing=facing,
         pose=classify_pose(extended, curled),
+        pinch_ring=_d(pts[THUMB_TIP], pts[RING_TIP]) / palm,
+        pinch_pinky=_d(pts[THUMB_TIP], pts[PINKY_TIP]) / palm,
     )
 
 

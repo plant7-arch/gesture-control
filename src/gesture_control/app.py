@@ -148,6 +148,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--zoom-test", action="store_true",
                    help="zoom in then out under the pointer (a real touchpad pinch by "
                         "default; no camera), then exit")
+    p.add_argument("--keyboard-test", action="store_true",
+                   help="type a test sentence into the focused window (no camera), "
+                        "then exit")
     p.add_argument("--calibrate", action="store_true",
                    help="find where the screen edges are (absolute mode), then exit")
     p.add_argument("--calibrate-trackball", action="store_true",
@@ -419,6 +422,50 @@ def zoom_test(cfg, dry_run: bool) -> None:
         ptr.close()
 
 
+KEYBOARD_TEST_TEXT = "Hello from gesture-control 123!"
+KEYBOARD_TEST_RESULT = "Hello from gesture-control 123?"  # after Backspace and Shift+/
+
+
+def keyboard_test(dry_run: bool, wait=time.sleep) -> list[str]:
+    """Type a sentence into the focused window through the virtual keyboard, the way
+    the air keyboard types: letters, Shift, digits, Backspace. Returns what it sent."""
+    from .keyboard import Typer, specs_for_text
+
+    print("Keyboard test: click into a text editor (e.g. Text Editor), not this "
+          "terminal, within 3 seconds.")
+    for n in (3, 2, 1):
+        print(f"  typing in {n}...")
+        wait(1)
+    keys = _make_keys(dry_run)
+    specs = specs_for_text(KEYBOARD_TEST_TEXT) + ["backspace", "shift+slash"]
+    try:
+        typer = Typer(keys)
+        for spec in specs:
+            typer.press_spec(spec, 0.0)
+            wait(0.03)
+    finally:
+        keys.close()
+    print(f"Done. The editor should now show:  {KEYBOARD_TEST_RESULT}")
+    print("Different characters (e.g. z and y swapped) mean your keyboard layout isn't "
+          "US; nothing typed means the virtual keyboard isn't reaching GNOME "
+          "(README > Keyboard).")
+    return specs
+
+
+def _preview_key(key: int, controller, said: list[bool]) -> int:
+    """A key the preview window received. Right after the virtual keyboard typed, it's
+    one of ours: the preview had the focus. Ignore it (a typed q or Esc mustn't quit),
+    and say where the typing went."""
+    if key == 255 or not controller.typed_recently(time.monotonic()):
+        return key
+    controller.typed_into_preview()
+    if not said[0]:
+        said[0] = True
+        print("Typing went into the preview window: pinch-click into the app you want "
+              "to type in first. Keys sent to the preview are ignored.")
+    return 255
+
+
 # A hand can't really move this far between two frames (about 4 m/s at 30 fps); a jump
 # like this is the tracker switching hands or glitching, not movement.
 MAX_JUMP_PALMS = 1.5
@@ -639,6 +686,9 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
     if args.zoom_test:
         zoom_test(cfg, args.dry_run)
         return
+    if args.keyboard_test:
+        keyboard_test(args.dry_run)
+        return
     if args.pointer_test:
         # Test the device the app will really use: settle cursor.relative.output
         # ("auto" -> trackball or tablet) the same way a normal start does.
@@ -737,7 +787,10 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
             pointer = _make_pointer(device, args.dry_run, settle=0.0)
         zoom_on = bool(cfg["zoom"]["enabled"])
         method = cfg["zoom"]["method"]
-        if zoom_on and method != "touchpad":
+        kc = cfg["keyboard"]
+        gestures_on = any(kc["gestures"][g] != "none" for g in ("ring_pinch", "pinky_pinch"))
+        keyboard_on = bool(kc["enabled"]) and bool(cfg["preview"]["enabled"])
+        if (zoom_on and method != "touchpad") or keyboard_on or gestures_on:
             keys = _make_keys(args.dry_run, settle=0.0)
         if (zoom_on and method == "touchpad") or cfg["scroll"]["method"] == "touchpad":
             tp_settings = TouchpadSettings()  # GNOME's touchpad settings apply to both
@@ -797,8 +850,18 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
                   f"{cfg['camera']['height']}, so it runs at {w}x{h} (camera.width/height).")
         if cfg["zoom"]["enabled"] and int(cfg["tracker"]["num_hands"]) < 2:
             print("Note: zoom needs tracker.num_hands: 2 - two-hand zoom is off.")
+        if keyboard_on:
+            from .keyboard import gnome_layout
+
+            layout = gnome_layout()
+            if layout not in (None, "us"):
+                print(f"Note: the keyboard's labels are for the US layout, and yours is "
+                      f"'{layout}': some keys type other characters than they show.")
         if overlay:
-            print("Preview: q / Esc quit, p pause/resume. Hold a fist ~1 s to pause/resume.")
+            kb_tip = (f" Hold {kc['toggle']} ~{kc['toggle_hold_s']:g} s for the keyboard."
+                      if keyboard_on else "")
+            print("Preview: q / Esc quit, p pause/resume. Hold a fist ~1 s to pause/resume."
+                  + kb_tip)
         else:
             print("Running without preview. Ctrl+C to quit. Hold a fist ~1 s to pause/resume.")
         first_frame = True
@@ -809,6 +872,8 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
         seq, fps, t_fps, n_fps = 0, 0.0, time.monotonic(), 0
         prev_anchor = prev_other = None
         stall_since = stall_said = None
+        said_preview = [False]
+        from .features import INDEX_TIP
 
         while True:
             item = camera.read(seq, timeout=1.0)
@@ -840,7 +905,8 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
                 if overlay:
                     # Say so in the window (it would otherwise just freeze) and keep it
                     # responsive (q / Esc / close) even without frames.
-                    key = overlay.show_stalled(now - stall_since)
+                    key = _preview_key(overlay.show_stalled(now - stall_since), controller,
+                                       said_preview)
                     if key in (ord("q"), 27) or overlay.closed():
                         break
                 continue
@@ -856,13 +922,14 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
             hands = tracker.process_all(frame, int(cap_ts * 1000))
             hand = _pick_primary(hands, prev_anchor, anchor_name)
             other = next((h for h in hands if h is not hand), None)
-            feats = anchor = palm = zoom_in = None
+            feats = anchor = palm = zoom_in = tip = None
             switched = False
             fh, fw = frame.shape[:2]
             controller.set_frame_size(fw, fh)  # no-op unless the size changed
             if hand is not None:
                 feats = compute_features(feature_points(hand, fw, fh), ext, curl)
                 anchor = anchor_point(hand.image, anchor_name)
+                tip = (float(hand.image[INDEX_TIP][0]), float(hand.image[INDEX_TIP][1]))
                 palm = palm_length(hand.image, fw, fh)
                 switched = _is_switch(anchor, prev_anchor, prev_other, palm)
                 prev_anchor = anchor
@@ -876,7 +943,7 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
             # time (7.7-62.7 ms between "now"s for frames 31-37 ms apart, measured),
             # and that noise would go straight into the hand-speed estimates.
             status = controller.update(feats, anchor, cap_ts, palm, zoom_in,
-                                       rebase=switched)
+                                       rebase=switched, tip=tip)
             latency_ms = (time.monotonic() - cap_ts) * 1000
 
             n_fps += 1
@@ -892,7 +959,7 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
             if overlay:
                 overlay.draw(frame, hand, status, fps, latency_ms,
                              hand.handedness if hand else "", anchor, other)
-                key = overlay.show(frame)
+                key = _preview_key(overlay.show(frame), controller, said_preview)
             if first_frame:
                 first_frame = False
                 if args.verbose:
