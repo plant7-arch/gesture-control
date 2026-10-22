@@ -16,6 +16,8 @@ camera:
   fourcc: MJPG
   mirror: true          # mirror view, so moving right moves the cursor right
   lock_framerate: true  # stop auto-exposure dropping to 15 fps in dim light
+  buffers: 2            # camera frame buffers. 1 makes many cameras skip frames
+                        #   (20 fps instead of 30); more than 2 isn't needed
 
 tracker:
   model: models/hand_landmarker.task   # relative to the project root

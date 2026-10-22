@@ -83,6 +83,7 @@ DEFAULTS: dict[str, Any] = {
         "fourcc": "MJPG",
         "mirror": True,
         "lock_framerate": True,
+        "buffers": 2,
     },
     "tracker": {
         "model": "models/hand_landmarker.task",
@@ -428,6 +429,7 @@ def _check_ranges(cfg: dict[str, Any]) -> None:
             raise ValueError(f"{p} must be at least 1")
     # Counts and sizes: whole numbers, at least this much.
     for p, low in (("camera.index", 0), ("camera.width", 1), ("camera.height", 1),
+                   ("camera.buffers", 2),
                    ("tracker.num_hands", 1), ("tracker.second_hand_check_every", 0),
                    ("pose.debounce_frames", 1), ("pinch.confirm_frames", 1),
                    ("safety.lost_hand_release_frames", 1)):

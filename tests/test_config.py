@@ -209,6 +209,7 @@ def test_value_in_place_of_a_section_is_refused(cfgdir, text, section):
     ("camera:\n  width: 0\n", "camera.width"),
     ("camera:\n  index: -1\n", "camera.index"),
     ("safety:\n  lost_hand_release_frames: 0\n", "lost_hand_release_frames"),
+    ("camera:\n  buffers: 1\n", "camera.buffers must be a whole number of at least 2"),
     # ranges that break the maths
     ("camera:\n  fps: 0\n", "camera.fps"),
     ("scroll:\n  filter:\n    min_cutoff: 0\n", "scroll.filter.min_cutoff"),

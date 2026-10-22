@@ -31,7 +31,9 @@ class FakeCap:
     def isOpened(self):
         return True
 
-    def set(self, *_):
+    def set(self, prop, value):
+        self.props = getattr(self, "props", {})
+        self.props[prop] = value
         return True
 
     def get(self, prop):
@@ -139,3 +141,31 @@ def test_failed_start_still_restores_the_control(monkeypatch, v4l2):
         cam.start()
     cam.stop()
     assert v4l2["value"] == 1
+
+
+def test_camera_gets_two_buffers_by_default(monkeypatch, v4l2):
+    """One buffer made the Dell G15 webcam skip every third frame (20 fps, not 30)."""
+    cap = FakeCap()
+    cam = _camera(monkeypatch, cap)
+    cam.stop()
+    assert cap.props[capture.cv2.CAP_PROP_BUFFERSIZE] == 2
+
+
+def test_buffer_count_comes_from_the_config(monkeypatch, v4l2):
+    cap = FakeCap()
+    monkeypatch.setattr(capture.cv2, "VideoCapture", lambda *a: cap)
+    cam = Camera(dict(CFG, buffers=4))
+    cam.start()
+    cam.stop()
+    assert cap.props[capture.cv2.CAP_PROP_BUFFERSIZE] == 4
+
+
+def test_reader_still_hands_out_only_the_newest_frame(monkeypatch, v4l2):
+    """With frames queued faster than they're read, read() skips to the newest."""
+    cap = FakeCap()
+    cam = _camera(monkeypatch, cap)
+    first = cam.read(0, timeout=1.0)
+    time.sleep(0.1)                               # ~20 frames arrive meanwhile
+    second = cam.read(first[2], timeout=1.0)
+    cam.stop()
+    assert second[2] - first[2] > 5               # many frames passed: no backlog served

@@ -38,7 +38,12 @@ class Camera:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(self.cfg["width"]))
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(self.cfg["height"]))
         cap.set(cv2.CAP_PROP_FPS, float(self.cfg["fps"]))
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # At least 2 buffers: with only 1, the camera has nowhere to put the next frame
+        # while the current one is being handed over, and skips it (measured on a Dell
+        # G15 webcam: 20 fps instead of 30, in MJPG and YUYV alike). More buffers add
+        # no lag here: the reader thread empties them as fast as frames arrive and
+        # always hands out the newest.
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, int(self.cfg.get("buffers", 2)))
         self.actual = (
             int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
             int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),

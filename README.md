@@ -551,6 +551,7 @@ about 9 cm), so they don't change with distance from the camera.
 | `fourcc` | `MJPG` | Camera format. `MJPG` gives full frame rate; `YUYV` is the uncompressed alternative |
 | `mirror` | `true` | Mirror the image so moving your hand right moves the cursor right |
 | `lock_framerate` | `true` | Stop auto-exposure lowering the frame rate in dim light (sets the camera's `exposure_dynamic_framerate` to 0 while the app runs and puts it back at exit; a camera already at 0 is left at 0) |
+| `buffers` | `2` | Frame buffers for the camera (at least 2). With 1, many webcams skip every third frame (20 fps instead of 30). More buffers add no lag: the app always takes the newest frame |
 
 #### `tracker` (MediaPipe hand tracking)
 
