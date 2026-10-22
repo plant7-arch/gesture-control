@@ -305,3 +305,13 @@ def test_still_stopping_says_when_it_waits_for_the_hand_tracker():
     guard._handle(2, None)
     assert said == ["Still stopping (waiting for the hand tracker to finish loading, a few "
                     "seconds)... press Ctrl+C again to quit at once."]
+
+
+def test_the_startup_line_lists_what_came_from_the_command_line(run_app, capsys):
+    """v0.20.0: settings given as options are listed at startup, so it's clear they
+    took effect (like "Also loaded" for the files)."""
+    run_app([1.0], "--pinch-start", "0.3")
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if ln.startswith("Command line: "))
+    assert {"--pinch-start 0.3", "--dry-run", "--no-preview"} == set(
+        line.removeprefix("Command line: ").split(", "))

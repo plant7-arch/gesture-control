@@ -574,7 +574,7 @@ tracking fast, so a zoom can take about 0.2 seconds to start.
 
 ### How the config files work
 
-Settings are read from up to four layers. Each layer only needs the settings it changes,
+Settings are read from up to five layers. Each layer only needs the settings it changes,
 and later layers win:
 
 | Order | Source | Who writes it |
@@ -583,6 +583,7 @@ and later layers win:
 | 2 | `config/gestures.yaml` | each build (overwritten by `unzip -o`) |
 | 3 | `config/calibration.yaml` | `--calibrate` / `--calibrate-trackball` |
 | 4 | `config/local.yaml` | **you** |
+| 5 | Command-line options, for one run (`--pinch-start 0.32`) | **you** |
 
 All of these files are optional: without `local.yaml` and `calibration.yaml` the app runs
 on the defaults. Put your changes in **`config/local.yaml`**. It and `calibration.yaml`
@@ -654,6 +655,58 @@ To undo calibration, delete `config/calibration.yaml`. If that file gets damaged
 next calibration keeps the old one as `config/calibration.yaml.bak` (git-ignored, like
 the calibration itself) and tells you, so nothing is lost silently.
 
+### On the command line
+
+Every setting is also a command-line option, for one run, so you can try a value
+without editing a file. The option is the setting's name with dots and underscores
+turned into dashes:
+
+| Setting | Option |
+|---|---|
+| `pinch.start` | `--pinch-start 0.32` |
+| `phone.facing` | `--phone-facing front` |
+| `cursor.relative.gain_slow` | `--cursor-relative-gain-slow 0.03` |
+| `zoom.touchpad.start_mm` | `--zoom-touchpad-start-mm 40` |
+| `preview.enabled` | `--preview-enabled false` |
+
+```bash
+uv run gesture-control --phone --phone-facing front --phone-size 1280x720
+```
+
+- **Values** are written as in `local.yaml`: `true` / `false`, numbers, words, `auto`,
+  `null`, and lists in quotes: `--cursor-abs-scale "[0.9, 0.95]"`,
+  `--phone-extra-args "[--camera-ar=4:3]"`.
+- **The command line wins** over every file (layer 5 above), and its values go through
+  the same checks: `--pinch-start 0.5` gives the same error as in `local.yaml`, naming
+  the option (`(from the command line: --pinch-start 0.5)`).
+- **At startup**, `Command line: --phone-facing front, --phone` lists what came from the
+  command line, so you can see it took effect.
+- **Every option** is listed in the *Option* column of [All settings](#all-settings), and
+  in `uv run gesture-control --help`, grouped by section with its default.
+- **Full names only:** with over 100 options, abbreviations (`--pha` for `--phone-facing`)
+  are refused, so a typo can't quietly change a different setting.
+- **Short options** from before still work and mean the same as the long ones:
+
+  | Short | Same as |
+  |---|---|
+  | `--camera 2` | `--camera-index 2` |
+  | `--mode absolute` | `--cursor-mode absolute` |
+  | `--no-preview` | `--preview-enabled false` |
+  | `--start-paused` | `--pause-start-paused true` |
+  | `--phone` / `--no-phone` | `--phone-enabled true` / `false` |
+  | `--connect IP:PORT` | `--phone-connect IP:PORT --phone-enabled true` |
+  | `--dry-run` | `--run-dry-run true` |
+  | `-v` | `--run-verbose true` |
+
+  Both forms together are fine with the same value; different values are refused.
+
+The other direction works too: `--dry-run` and `-v` are the settings `run.dry_run` and
+`run.verbose`, so `local.yaml` can turn them on for every run. Only these stay
+command-line only, because they aren't settings: `--pointer-test`, `--scroll-test`,
+`--zoom-test`, `--calibrate` and `--calibrate-trackball` (one-off actions: as a setting,
+every start would run the test and exit), `--config` (it chooses the files, so it can't
+be inside one) and `--version`.
+
 ### Common changes
 
 | I want to... | Setting in local.yaml |
@@ -688,159 +741,166 @@ about 9 cm), so they don't change with distance from the camera.
 
 #### `camera`
 
-| Setting | Default | What it does |
-|---|---|---|
-| `index` | `0` | Camera device number: `0` = `/dev/video0` (`--camera N` overrides it) |
-| `width`, `height` | `640`, `480` | Capture resolution. Higher doesn't improve tracking, it only costs speed. If the camera doesn't offer this size, a startup note says which size it uses instead; the app works with that size |
-| `fps` | `30` | Requested frame rate (your webcam's maximum is 30) |
-| `fourcc` | `MJPG` | Camera format, 4 characters. `MJPG` gives full frame rate; `YUYV` is the uncompressed alternative |
-| `mirror` | `true` | Mirror the image so moving your hand right moves the cursor right |
-| `lock_framerate` | `true` | Stop auto-exposure lowering the frame rate in dim light (sets the camera's `exposure_dynamic_framerate` to 0 while the app runs and puts it back at exit; a camera already at 0 is left at 0) |
-| `buffers` | `2` | Frame buffers for the camera (at least 2). With 1, many webcams skip every third frame (20 fps instead of 30). More buffers add no lag: the app always takes the newest frame |
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `index` | `--camera-index` | `0` | Camera device number: `0` = `/dev/video0` (`--camera N` overrides it) |
+| `width`, `height` | `--camera-width`, `--camera-height` | `640`, `480` | Capture resolution. Higher doesn't improve tracking, it only costs speed. If the camera doesn't offer this size, a startup note says which size it uses instead; the app works with that size |
+| `fps` | `--camera-fps` | `30` | Requested frame rate (your webcam's maximum is 30) |
+| `fourcc` | `--camera-fourcc` | `MJPG` | Camera format, 4 characters. `MJPG` gives full frame rate; `YUYV` is the uncompressed alternative |
+| `mirror` | `--camera-mirror` | `true` | Mirror the image so moving your hand right moves the cursor right |
+| `lock_framerate` | `--camera-lock-framerate` | `true` | Stop auto-exposure lowering the frame rate in dim light (sets the camera's `exposure_dynamic_framerate` to 0 while the app runs and puts it back at exit; a camera already at 0 is left at 0) |
+| `buffers` | `--camera-buffers` | `2` | Frame buffers for the camera (at least 2). With 1, many webcams skip every third frame (20 fps instead of 30). More buffers add no lag: the app always takes the newest frame |
 
 #### `tracker` (MediaPipe hand tracking)
 
-| Setting | Default | What it does |
-|---|---|---|
-| `model` | `models/hand_landmarker.task` | Model file, relative to the project folder. The default one downloads automatically and is checked ([Setup, step 4](#4-the-app)); a model of your own is used as it is |
-| `num_hands` | `2` | Hands to track. 2 is needed for two-hand zoom; one-hand gestures follow the hand you were already using. Set 1 if you don't use zoom |
-| `second_hand_check_every` | `5` | With one hand in view, look for a second hand only every N frames (finding one switches to full two-hand tracking). Looking every frame (1) roughly doubles the CPU time per frame. The hand you're using is always tracked on every frame by the one-hand tracker, so these checks don't make it jitter |
-| `min_detection_confidence` | `0.6` | How sure the model must be to find a new hand (0..1, like the next two). Lower finds hands sooner, but with more false detections |
-| `min_presence_confidence` | `0.6` | How sure it must be that the hand is still there |
-| `min_tracking_confidence` | `0.5` | Below this it searches for the hand again instead of tracking it |
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `model` | `--tracker-model` | `models/hand_landmarker.task` | Model file, relative to the project folder. The default one downloads automatically and is checked ([Setup, step 4](#4-the-app)); a model of your own is used as it is |
+| `num_hands` | `--tracker-num-hands` | `2` | Hands to track. 2 is needed for two-hand zoom; one-hand gestures follow the hand you were already using. Set 1 if you don't use zoom |
+| `second_hand_check_every` | `--tracker-second-hand-check-every` | `5` | With one hand in view, look for a second hand only every N frames (finding one switches to full two-hand tracking). Looking every frame (1) roughly doubles the CPU time per frame. The hand you're using is always tracked on every frame by the one-hand tracker, so these checks don't make it jitter |
+| `min_detection_confidence` | `--tracker-min-detection-confidence` | `0.6` | How sure the model must be to find a new hand (0..1, like the next two). Lower finds hands sooner, but with more false detections |
+| `min_presence_confidence` | `--tracker-min-presence-confidence` | `0.6` | How sure it must be that the hand is still there |
+| `min_tracking_confidence` | `--tracker-min-tracking-confidence` | `0.5` | Below this it searches for the hand again instead of tracking it |
 
 #### `pose` (finger up / curled detection)
 
-| Setting | Default | What it does |
-|---|---|---|
-| `extend_ratio` | `1.15` | A finger is up when its tip is this many times further from the wrist than its middle joint (typical: up 1.3–1.5) |
-| `curl_ratio` | `0.95` | A finger is curled below this (typical: 0.6–0.8). Used for the fist |
-| `debounce_frames` | `3` | Frames a pose must hold before it counts (3 = about 100 ms). Higher = fewer accidental mode changes, but slower to react |
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `extend_ratio` | `--pose-extend-ratio` | `1.15` | A finger is up when its tip is this many times further from the wrist than its middle joint (typical: up 1.3–1.5) |
+| `curl_ratio` | `--pose-curl-ratio` | `0.95` | A finger is curled below this (typical: 0.6–0.8). Used for the fist |
+| `debounce_frames` | `--pose-debounce-frames` | `3` | Frames a pose must hold before it counts (3 = about 100 ms). Higher = fewer accidental mode changes, but slower to react |
 
 #### `pinch` (clicks)
 
-| Setting | Default | What it does |
-|---|---|---|
-| `start` | `0.28` | A pinch begins when the thumb–fingertip distance drops below this (left tick on the L / R bars). Higher = registers more easily |
-| `release` | `0.42` | It ends when the distance rises above this (right tick). Must be larger than `start` |
-| `confirm_frames` | `3` | Frames below `start` before the click fires. Higher = fewer accidental clicks, slightly slower |
-| `min_finger_reach` | `1.05` | Left pinch only counts if the index fingertip is at least this far from the wrist (in palm lengths), so a fist isn't read as a click. It also tells a bent-finger pinch (above it) from a fist (below it) |
-| `right_min_reach` | `0.0` | Same check for the middle finger and right click. `0` = off |
-| `min_facing` | `0.6` | Pinches only start when your hand faces the camera at least this squarely (1 = square on, 0 = edge-on; 0..1) |
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `start` | `--pinch-start` | `0.28` | A pinch begins when the thumb–fingertip distance drops below this (left tick on the L / R bars). Higher = registers more easily |
+| `release` | `--pinch-release` | `0.42` | It ends when the distance rises above this (right tick). Must be larger than `start` |
+| `confirm_frames` | `--pinch-confirm-frames` | `3` | Frames below `start` before the click fires. Higher = fewer accidental clicks, slightly slower |
+| `min_finger_reach` | `--pinch-min-finger-reach` | `1.05` | Left pinch only counts if the index fingertip is at least this far from the wrist (in palm lengths), so a fist isn't read as a click. It also tells a bent-finger pinch (above it) from a fist (below it) |
+| `right_min_reach` | `--pinch-right-min-reach` | `0.0` | Same check for the middle finger and right click. `0` = off |
+| `min_facing` | `--pinch-min-facing` | `0.6` | Pinches only start when your hand faces the camera at least this squarely (1 = square on, 0 = edge-on; 0..1) |
 
 #### `cursor`
 
-| Setting | Default | What it does |
-|---|---|---|
-| `mode` | `relative` | `relative`: touchpad-like, the cursor follows hand movement. `absolute`: hand position = screen position |
-| `anchor` | `knuckles` | Hand point that drives the cursor: `knuckles` (average of 4, steadiest), `index_mcp` (index knuckle), `index_tip` (fingertip, moves when you pinch), `palm_center` |
-| `click_freeze_ms` | `180` | After a click starts, hold the cursor still this long so the click lands on target |
-| `abs_scale` | `[1.0, 1.0]` | Written by `--calibrate` (into `calibration.yaml`); don't set it by hand |
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `mode` | `--cursor-mode` | `relative` | `relative`: touchpad-like, the cursor follows hand movement. `absolute`: hand position = screen position |
+| `anchor` | `--cursor-anchor` | `knuckles` | Hand point that drives the cursor: `knuckles` (average of 4, steadiest), `index_mcp` (index knuckle), `index_tip` (fingertip, moves when you pinch), `palm_center` |
+| `click_freeze_ms` | `--cursor-click-freeze-ms` | `180` | After a click starts, hold the cursor still this long so the click lands on target |
+| `abs_scale` | `--cursor-abs-scale` | `[1.0, 1.0]` | Written by `--calibrate` (into `calibration.yaml`); don't set it by hand |
 
 `cursor.relative` (relative mode). Gain is screen widths of cursor travel per palm length
 of hand travel. It rises smoothly from `gain_slow` to `gain_fast` as hand speed rises
 from `speed_slow` to `speed_fast`:
 
-| Setting | Default | What it does |
-|---|---|---|
-| `gain_slow` | `0.05` | Gain for slow movement (0.05 = 96 px per palm length on a 1920 px screen). Lower = more precise |
-| `gain_fast` | `0.4` | Gain for fast movement. Higher = less arm movement to cross the screen |
-| `speed_slow` | `0.6` | Hand speed (palm lengths per second) at or below which `gain_slow` applies |
-| `speed_fast` | `5.0` | Hand speed at or above which `gain_fast` applies |
-| `min_speed` | `0.15` | Slower than this counts as holding still: hides tracking jitter. Raise it if the cursor creeps |
-| `screen_aspect` | `auto` | Screen width ÷ height, so vertical and horizontal movement match. `auto` reads it from GNOME (1.6 if it can't); or set a number: 1.6 for 16:10, 1.78 for 16:9. The trackball output always uses the screen's real shape |
-| `output` | `auto` | `auto`: the trackball output once its [one-time setup](#using-your-mouse-and-gestures-together-optional-one-time-setup) is done, otherwise the tablet. `trackball`: always (exits with the setup steps if they're missing). `tablet`: the calibrated virtual tablet; the cursor jumps back after you use your real mouse. `mouse`: plain mouse events, with GNOME's mouse acceleration added on top |
-| `trackball_counts` | `[0, 0]` | Movement units for one screen width and height. `[0, 0]` = automatic (from GNOME); `--calibrate-trackball` writes measured values |
-| `trackball_mouse_speed` | `null` | Written by `--calibrate-trackball`: GNOME's mouse speed at calibration, to warn when it changes |
-| `mouse_px_per_screen` | `1920` | Only for `output: mouse`: movement units per screen width (the height uses `screen_aspect`) |
-| `filter.min_cutoff` | `1.0` | Smoothing when still. Lower = steadier, but more lag |
-| `filter.beta` | `4.0` | Smoothing when moving. Higher = less lag on fast moves, but more jitter |
-| `filter.d_cutoff` | `1.0` | Smoothing of the speed estimate; rarely needs changing |
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `gain_slow` | `--cursor-relative-gain-slow` | `0.05` | Gain for slow movement (0.05 = 96 px per palm length on a 1920 px screen). Lower = more precise |
+| `gain_fast` | `--cursor-relative-gain-fast` | `0.4` | Gain for fast movement. Higher = less arm movement to cross the screen |
+| `speed_slow` | `--cursor-relative-speed-slow` | `0.6` | Hand speed (palm lengths per second) at or below which `gain_slow` applies |
+| `speed_fast` | `--cursor-relative-speed-fast` | `5.0` | Hand speed at or above which `gain_fast` applies |
+| `min_speed` | `--cursor-relative-min-speed` | `0.15` | Slower than this counts as holding still: hides tracking jitter. Raise it if the cursor creeps |
+| `screen_aspect` | `--cursor-relative-screen-aspect` | `auto` | Screen width ÷ height, so vertical and horizontal movement match. `auto` reads it from GNOME (1.6 if it can't); or set a number: 1.6 for 16:10, 1.78 for 16:9. The trackball output always uses the screen's real shape |
+| `output` | `--cursor-relative-output` | `auto` | `auto`: the trackball output once its [one-time setup](#using-your-mouse-and-gestures-together-optional-one-time-setup) is done, otherwise the tablet. `trackball`: always (exits with the setup steps if they're missing). `tablet`: the calibrated virtual tablet; the cursor jumps back after you use your real mouse. `mouse`: plain mouse events, with GNOME's mouse acceleration added on top |
+| `trackball_counts` | `--cursor-relative-trackball-counts` | `[0, 0]` | Movement units for one screen width and height. `[0, 0]` = automatic (from GNOME); `--calibrate-trackball` writes measured values |
+| `trackball_mouse_speed` | `--cursor-relative-trackball-mouse-speed` | `null` | Written by `--calibrate-trackball`: GNOME's mouse speed at calibration, to warn when it changes |
+| `mouse_px_per_screen` | `--cursor-relative-mouse-px-per-screen` | `1920` | Only for `output: mouse`: movement units per screen width (the height uses `screen_aspect`) |
+| `filter.min_cutoff` | `--cursor-relative-filter-min-cutoff` | `1.0` | Smoothing when still. Lower = steadier, but more lag |
+| `filter.beta` | `--cursor-relative-filter-beta` | `4.0` | Smoothing when moving. Higher = less lag on fast moves, but more jitter |
+| `filter.d_cutoff` | `--cursor-relative-filter-d-cutoff` | `1.0` | Smoothing of the speed estimate; rarely needs changing |
 
 Absolute mode only:
 
-| Setting | Default | What it does |
-|---|---|---|
-| `region.x_min`, `x_max` | `0.2`, `0.8` | Left and right edges of the box (fractions of the camera image) that maps to the screen |
-| `region.y_min`, `y_max` | `0.2`, `0.7` | Top and bottom edges of that box |
-| `filter.min_cutoff` / `beta` / `d_cutoff` | `1.0` / `10.0` / `1.0` | Smoothing, as above |
-| `deadzone` | `0.0015` | Ignore cursor changes smaller than this fraction of the screen |
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `region.x_min`, `x_max` | `--cursor-region-x-min`, `--cursor-region-x-max` | `0.2`, `0.8` | Left and right edges of the box (fractions of the camera image) that maps to the screen |
+| `region.y_min`, `y_max` | `--cursor-region-y-min`, `--cursor-region-y-max` | `0.2`, `0.7` | Top and bottom edges of that box |
+| `filter.min_cutoff` / `beta` / `d_cutoff` | `--cursor-filter-min-cutoff`, `--cursor-filter-beta`, `--cursor-filter-d-cutoff` | `1.0` / `10.0` / `1.0` | Smoothing, as above |
+| `deadzone` | `--cursor-deadzone` | `0.0015` | Ignore cursor changes smaller than this fraction of the screen |
 
 #### `scroll` (peace sign)
 
-| Setting | Default | What it does |
-|---|---|---|
-| `notches_per_height` | `25` | Wheel notches for moving your hand the full camera-image height. Higher = faster scrolling |
-| `direction` | `natural` | `natural`: the page follows your hand, like a phone (up/down and sideways). `traditional`: like a mouse wheel (hand up = scroll up, hand right = scroll right). Replaces the old `invert` setting |
-| `horizontal` | `true` | Also scroll sideways. `false`: up/down only, as in versions before 0.16 |
-| `axis_lock` | `true` | Each swipe scrolls along one direction only, the one your hand first moves along, so slanted swipes don't drift. `false`: scroll freely in any direction, diagonals included |
-| `method` | `touchpad` | `touchpad`: scrolling is sent as a two-finger swipe on a virtual touchpad, so apps treat it like your laptop touchpad: the image viewer, maps and PDF viewers pan, and a pinch-zoomed page scrolls sideways. Needs the touchpad turned on and two-finger scrolling selected in Settings > Mouse & Touchpad (otherwise the app says so and uses the wheel). `wheel`: sent as a mouse wheel (the image viewer then zooms instead of panning) |
-| `touchpad.mm_per_notch` | `5.0` | `method: touchpad`: virtual finger travel for one wheel notch's worth of scrolling. Higher = scrolls further for the same hand movement |
-| `deadzone` | `0.0015` | Ignore hand movement smaller than this (camera-image heights) |
-| `settle_ms` | `200` | Ignore movement just after switching to the scroll pose |
-| `fling.enabled` | `true` | Keep gliding after a fast swipe ends |
-| `fling.min_speed` | `0.8` | Hand speed when leaving the pose (camera-image heights per second, in any direction) needed for a glide. Lower = glides more easily |
-| `fling.boost` | `2.0` | The glide goes this many times further than at plain swipe speed. Higher = flings go further, with the glide lasting only slightly longer. Doesn't affect dragging. `1.0` = glide at exactly your swipe speed |
-| `fling.boost_ramp_s` | `0.15` | The glide starts at exactly your drag speed, with no pause, and eases up to the boosted speed over about this long, so drag and glide feel like one motion. Raise it if the speed-up after letting go feels abrupt |
-| `fling.max_notches_per_s` | `300` | Speed limit for any glide, stacked or not (a diagonal glide keeps its angle) |
-| `fling.stack.enabled` | `true` | A quick flick during a glide adds the glide's speed to the new fling |
-| `fling.stack.window_s` | `1.0` | The new swipe must be released within this long after the peace sign catches the glide |
-| `fling.stack.factor` | `1.0` | Share of the caught glide speed carried into the new fling (`0.5` = half) |
-| `fling.stack.settle_ms` | `60` | Settle time right after catching a glide, shorter than `settle_ms` so a quick flick isn't lost |
-| `fling.time_constant_s` | `0.45` | How long the glide lasts. Higher = glides longer and further |
-| `filter.*` | `1.0` / `5.0` / `1.0` | Smoothing, as above |
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `notches_per_height` | `--scroll-notches-per-height` | `25` | Wheel notches for moving your hand the full camera-image height. Higher = faster scrolling |
+| `direction` | `--scroll-direction` | `natural` | `natural`: the page follows your hand, like a phone (up/down and sideways). `traditional`: like a mouse wheel (hand up = scroll up, hand right = scroll right). Replaces the old `invert` setting |
+| `horizontal` | `--scroll-horizontal` | `true` | Also scroll sideways. `false`: up/down only, as in versions before 0.16 |
+| `axis_lock` | `--scroll-axis-lock` | `true` | Each swipe scrolls along one direction only, the one your hand first moves along, so slanted swipes don't drift. `false`: scroll freely in any direction, diagonals included |
+| `method` | `--scroll-method` | `touchpad` | `touchpad`: scrolling is sent as a two-finger swipe on a virtual touchpad, so apps treat it like your laptop touchpad: the image viewer, maps and PDF viewers pan, and a pinch-zoomed page scrolls sideways. Needs the touchpad turned on and two-finger scrolling selected in Settings > Mouse & Touchpad (otherwise the app says so and uses the wheel). `wheel`: sent as a mouse wheel (the image viewer then zooms instead of panning) |
+| `touchpad.mm_per_notch` | `--scroll-touchpad-mm-per-notch` | `5.0` | `method: touchpad`: virtual finger travel for one wheel notch's worth of scrolling. Higher = scrolls further for the same hand movement |
+| `deadzone` | `--scroll-deadzone` | `0.0015` | Ignore hand movement smaller than this (camera-image heights) |
+| `settle_ms` | `--scroll-settle-ms` | `200` | Ignore movement just after switching to the scroll pose |
+| `fling.enabled` | `--scroll-fling-enabled` | `true` | Keep gliding after a fast swipe ends |
+| `fling.min_speed` | `--scroll-fling-min-speed` | `0.8` | Hand speed when leaving the pose (camera-image heights per second, in any direction) needed for a glide. Lower = glides more easily |
+| `fling.boost` | `--scroll-fling-boost` | `2.0` | The glide goes this many times further than at plain swipe speed. Higher = flings go further, with the glide lasting only slightly longer. Doesn't affect dragging. `1.0` = glide at exactly your swipe speed |
+| `fling.boost_ramp_s` | `--scroll-fling-boost-ramp-s` | `0.15` | The glide starts at exactly your drag speed, with no pause, and eases up to the boosted speed over about this long, so drag and glide feel like one motion. Raise it if the speed-up after letting go feels abrupt |
+| `fling.max_notches_per_s` | `--scroll-fling-max-notches-per-s` | `300` | Speed limit for any glide, stacked or not (a diagonal glide keeps its angle) |
+| `fling.stack.enabled` | `--scroll-fling-stack-enabled` | `true` | A quick flick during a glide adds the glide's speed to the new fling |
+| `fling.stack.window_s` | `--scroll-fling-stack-window-s` | `1.0` | The new swipe must be released within this long after the peace sign catches the glide |
+| `fling.stack.factor` | `--scroll-fling-stack-factor` | `1.0` | Share of the caught glide speed carried into the new fling (`0.5` = half) |
+| `fling.stack.settle_ms` | `--scroll-fling-stack-settle-ms` | `60` | Settle time right after catching a glide, shorter than `settle_ms` so a quick flick isn't lost |
+| `fling.time_constant_s` | `--scroll-fling-time-constant-s` | `0.45` | How long the glide lasts. Higher = glides longer and further |
+| `filter.*` | `--scroll-filter-min-cutoff`, `--scroll-filter-beta`, `--scroll-filter-d-cutoff` | `1.0` / `5.0` / `1.0` | Smoothing, as above |
 
 #### `zoom` (two hands)
 
-| Setting | Default | What it does |
-|---|---|---|
-| `enabled` | `true` | Two pointing hands zoom. Needs `tracker.num_hands: 2` |
-| `method` | `touchpad` | `touchpad`: a true two-finger pinch on a virtual touchpad (smooth, centred on the pointer; needs the touchpad turned on and an app with pinch support). `ctrl_scroll`: Ctrl + smooth mouse wheel (works in more apps, in steps). `keys`: Ctrl+= / Ctrl+− taps |
-| `touchpad.gain` | `1.0` | Finger spread = hand spread ^ gain. Higher = zooms faster |
-| `touchpad.start_mm` | `45` | Distance between the virtual fingers when a pinch starts. The fingers sit on a diagonal, like a thumb and index finger. It must leave at least 10 mm to move apart and together on the touchpad: 26 to 80 for the default size (smaller `width_mm` / `height_mm` lower the top; the error message gives the range) |
-| `touchpad.width_mm`, `height_mm` | `100`, `65` | Size of the virtual touchpad. The fingers stay inside the zones where libinput ignores palms (outer 8% of the width) and thumbs (bottom 15%) |
-| `notch_ratio` | `1.15` | `ctrl_scroll` / `keys`: spreading your hands this many times further = one zoom step. Lower = zooms faster |
-| `invert` | `false` | `true` = spread to zoom out |
-| `settle_ms` | `150` | Ignore movement just after both hands start pointing |
-| `deadzone` | `0.004` | Ignore tiny spread changes (log scale), so still hands don't drift the zoom |
-| `ctrl_release_ms` | `400` | `ctrl_scroll`: let go of Ctrl after the hands have been still this long |
-| `filter.*` | `1.0` / `2.0` / `1.0` | Smoothing of the spread, as for the cursor |
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `enabled` | `--zoom-enabled` | `true` | Two pointing hands zoom. Needs `tracker.num_hands: 2` |
+| `method` | `--zoom-method` | `touchpad` | `touchpad`: a true two-finger pinch on a virtual touchpad (smooth, centred on the pointer; needs the touchpad turned on and an app with pinch support). `ctrl_scroll`: Ctrl + smooth mouse wheel (works in more apps, in steps). `keys`: Ctrl+= / Ctrl+− taps |
+| `touchpad.gain` | `--zoom-touchpad-gain` | `1.0` | Finger spread = hand spread ^ gain. Higher = zooms faster |
+| `touchpad.start_mm` | `--zoom-touchpad-start-mm` | `45` | Distance between the virtual fingers when a pinch starts. The fingers sit on a diagonal, like a thumb and index finger. It must leave at least 10 mm to move apart and together on the touchpad: 26 to 80 for the default size (smaller `width_mm` / `height_mm` lower the top; the error message gives the range) |
+| `touchpad.width_mm`, `height_mm` | `--zoom-touchpad-width-mm`, `--zoom-touchpad-height-mm` | `100`, `65` | Size of the virtual touchpad. The fingers stay inside the zones where libinput ignores palms (outer 8% of the width) and thumbs (bottom 15%) |
+| `notch_ratio` | `--zoom-notch-ratio` | `1.15` | `ctrl_scroll` / `keys`: spreading your hands this many times further = one zoom step. Lower = zooms faster |
+| `invert` | `--zoom-invert` | `false` | `true` = spread to zoom out |
+| `settle_ms` | `--zoom-settle-ms` | `150` | Ignore movement just after both hands start pointing |
+| `deadzone` | `--zoom-deadzone` | `0.004` | Ignore tiny spread changes (log scale), so still hands don't drift the zoom |
+| `ctrl_release_ms` | `--zoom-ctrl-release-ms` | `400` | `ctrl_scroll`: let go of Ctrl after the hands have been still this long |
+| `filter.*` | `--zoom-filter-min-cutoff`, `--zoom-filter-beta`, `--zoom-filter-d-cutoff` | `1.0` / `2.0` / `1.0` | Smoothing of the spread, as for the cursor |
 
 #### `double_click`
 
-| Setting | Default | What it does |
-|---|---|---|
-| `enabled` | `true` | Two quick pinches = double click |
-| `window_ms` | `700` | The second pinch must start within this time of releasing the first |
-| `max_move` | `0.02` | The cursor may drift at most this far between pinches (fraction of screen width, 0.02 = about 38 px) |
-| `os_time_ms` | `auto` | The system double-click time. `auto` reads GNOME's setting (400 ms by default); or set a number |
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `enabled` | `--double-click-enabled` | `true` | Two quick pinches = double click |
+| `window_ms` | `--double-click-window-ms` | `700` | The second pinch must start within this time of releasing the first |
+| `max_move` | `--double-click-max-move` | `0.02` | The cursor may drift at most this far between pinches (fraction of screen width, 0.02 = about 38 px) |
+| `os_time_ms` | `--double-click-os-time-ms` | `auto` | The system double-click time. `auto` reads GNOME's setting (400 ms by default); or set a number |
 
 #### `phone` (Android phone as the camera)
 
-| Setting | Default | What it does |
-|---|---|---|
-| `phone.enabled` | `false` | Use the phone as the camera: the app starts scrcpy and stops it at exit (`--phone` / `--no-phone` override it) |
-| `phone.facing` | `back` | Which camera: `back`, `front` or `external` |
-| `phone.size` | `640x480` | Picture size; one of the sizes `scrcpy --video-source=camera --list-camera-sizes` lists. The app reads the virtual camera at this size |
-| `phone.fps` | `30` | Frame rate asked of the phone |
-| `phone.bit_rate` | `8M` | Video bit rate from the phone (`8M`, `4000K` or a plain number like `8000000`); lower it (e.g. `4M`) if the picture stutters over Wi-Fi |
-| `phone.video_device` | `10` | The virtual camera's number: `/dev/video10` (v4l2loopback `video_nr`) |
-| `phone.connect` | `""` | Empty: USB. Wi-Fi: the IP address & Port from the phone's Wireless debugging screen. Since that changes every time, usually given with `--connect` instead, which overrides this |
-| `phone.serial` | `""` | Only with several phones or connections: which one, as `adb devices` lists it |
-| `phone.start_timeout_s` | `20` | Give up if the phone's picture hasn't started by then |
-| `phone.reconnect` | `true` | If the phone drops out while the app runs, bring it back by itself (retrying every 2 s). `false`: stop the app instead |
-| `phone.extra_args` | `[]` | More scrcpy options, as a list, e.g. `[--camera-ar=4:3]` |
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `phone.enabled` | `--phone-enabled` | `false` | Use the phone as the camera: the app starts scrcpy and stops it at exit (`--phone` / `--no-phone` override it) |
+| `phone.facing` | `--phone-facing` | `back` | Which camera: `back`, `front` or `external` |
+| `phone.size` | `--phone-size` | `640x480` | Picture size; one of the sizes `scrcpy --video-source=camera --list-camera-sizes` lists. The app reads the virtual camera at this size |
+| `phone.fps` | `--phone-fps` | `30` | Frame rate asked of the phone |
+| `phone.bit_rate` | `--phone-bit-rate` | `8M` | Video bit rate from the phone (`8M`, `4000K` or a plain number like `8000000`); lower it (e.g. `4M`) if the picture stutters over Wi-Fi |
+| `phone.video_device` | `--phone-video-device` | `10` | The virtual camera's number: `/dev/video10` (v4l2loopback `video_nr`) |
+| `phone.connect` | `--phone-connect` | `""` | Empty: USB. Wi-Fi: the IP address & Port from the phone's Wireless debugging screen. Since that changes every time, usually given with `--connect` instead, which overrides this |
+| `phone.serial` | `--phone-serial` | `""` | Only with several phones or connections: which one, as `adb devices` lists it |
+| `phone.start_timeout_s` | `--phone-start-timeout-s` | `20` | Give up if the phone's picture hasn't started by then |
+| `phone.reconnect` | `--phone-reconnect` | `true` | If the phone drops out while the app runs, bring it back by itself (retrying every 2 s). `false`: stop the app instead |
+| `phone.extra_args` | `--phone-extra-args` | `[]` | More scrcpy options, as a list, e.g. `[--camera-ar=4:3]` |
+
+#### `run`
+
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `run.dry_run` | `--run-dry-run` | `false` | Print the actions (clicks, movement, keys) instead of performing them; no virtual devices are created. Short: `--dry-run` |
+| `run.verbose` | `--run-verbose` | `false` | Print every action, and scrcpy's messages with the phone. Short: `-v` |
 
 #### `pause`, `safety`, `preview`
 
-| Setting | Default | What it does |
-|---|---|---|
-| `pause.fist_hold_s` | `1.0` | Seconds to hold a fist to pause or resume |
-| `pause.start_paused` | `false` | Start paused (same as `--start-paused`) |
-| `safety.lost_hand_release_frames` | `8` | Release a held button (e.g. mid-drag) if the hand is lost for this many frames |
-| `preview.enabled` | `true` | Show the camera window (`--no-preview` turns it off) |
-| `preview.window_name` | `gesture-control` | Window title |
-| `preview.show_landmarks` | `true` | Draw the hand skeleton |
+| Setting | Option | Default | What it does |
+|---|---|---|---|
+| `pause.fist_hold_s` | `--pause-fist-hold-s` | `1.0` | Seconds to hold a fist to pause or resume |
+| `pause.start_paused` | `--pause-start-paused` | `false` | Start paused (same as `--start-paused`) |
+| `safety.lost_hand_release_frames` | `--safety-lost-hand-release-frames` | `8` | Release a held button (e.g. mid-drag) if the hand is lost for this many frames |
+| `preview.enabled` | `--preview-enabled` | `true` | Show the camera window (`--no-preview` turns it off) |
+| `preview.window_name` | `--preview-window-name` | `gesture-control` | Window title |
+| `preview.show_landmarks` | `--preview-show-landmarks` | `true` | Draw the hand skeleton |
 
 ## Tuning
 

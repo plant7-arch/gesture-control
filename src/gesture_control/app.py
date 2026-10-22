@@ -13,8 +13,12 @@ from . import __version__
 from .config import (
     DEFAULT_CONFIG_PATH,
     command,
+    default_of,
     load_config,
+    option_name,
+    parse_value,
     pointer_device_mode,
+    setting_names,
     shown,
 )
 from .pointer import VirtualKeys, VirtualPointer
@@ -78,10 +82,45 @@ def _started(future, what: str, verbose: bool = False):
         raise RuntimeError(f"{what} couldn't start: {type(exc).__name__}: {exc}") from exc
 
 
+def _metavar(default) -> str:
+    if isinstance(default, bool):
+        return "true|false"
+    if isinstance(default, (int, float)):
+        return "N"
+    if isinstance(default, list):
+        return "[A, B]"
+    if default is None:
+        return "N|null"
+    if default == "auto":
+        return "auto|N"
+    return "WORD"
+
+
+# The short options kept from before: each sets one setting (--connect also turns
+# the phone on). Shown in --help next to the setting's own option.
+SHORTCUTS = {
+    "camera.index": "--camera", "cursor.mode": "--mode",
+    "preview.enabled": "--no-preview", "pause.start_paused": "--start-paused",
+    "phone.enabled": "--phone / --no-phone", "phone.connect": "--connect",
+    "run.dry_run": "--dry-run", "run.verbose": "-v",
+}
+
+
 def parse_args(argv=None) -> argparse.Namespace:
+    """The command line. Besides the actions and shortcuts below, every setting is an
+    option of its own (option_name(): pinch.start -> --pinch-start), read like its
+    value in local.yaml. The result has .overrides ({setting: value}, the command
+    line's layer for load_config) and .sources ({setting: what was typed})."""
     p = argparse.ArgumentParser(
         prog="gesture-control",
+        usage="%(prog)s [options] [--SECTION-SETTING VALUE ...]",
         description="Control the mouse with hand gestures (MediaPipe + uinput).",
+        epilog="Every setting in the config files is also an option: its name with "
+               "dots and underscores as dashes (pinch.start: --pinch-start 0.32, "
+               "cursor.relative.gain_slow: --cursor-relative-gain-slow 0.03). Values "
+               "are written as in local.yaml (true, 0.3, auto, [0.9, 0.95]), and the "
+               "command line wins over the files. README > Configuration.",
+        allow_abbrev=False,  # 100+ options: a typo mustn't quietly match another one
     )
     p.add_argument("--config", help=f"YAML config (default: {DEFAULT_CONFIG_PATH})")
     p.add_argument("--camera", type=int, help="camera index, e.g. 0 for /dev/video0")
@@ -106,9 +145,6 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--scroll-test", action="store_true",
                    help="scroll down, up, right, then left under the pointer (no camera), "
                         "then exit")
-    p.add_argument("--scroll-method", choices=["touchpad", "wheel"],
-                   help="override scroll.method (touchpad: a two-finger swipe, like a "
-                        "touchpad; wheel: the mouse wheel)")
     p.add_argument("--zoom-test", action="store_true",
                    help="zoom in then out under the pointer (a real touchpad pinch by "
                         "default; no camera), then exit")
@@ -118,10 +154,79 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="measure the trackball output (after its one-time setup), then exit")
     p.add_argument("-v", "--verbose", action="store_true", help="print every action")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+
+    # Every setting, grouped by section as in the config files.
+    groups: dict[str, argparse._ArgumentGroup] = {}
+    for name in setting_names():
+        section = name.split(".")[0]
+        if section not in groups:
+            groups[section] = p.add_argument_group(f"settings: {section}")
+        default = default_of(name)
+        short = SHORTCUTS.get(name)
+        groups[section].add_argument(
+            option_name(name), dest=f"set:{name}", metavar=_metavar(default),
+            default=argparse.SUPPRESS,
+            help=f"{name} (default {yaml_text(default)})"
+                 + (f"; short: {short}" if short else ""))
+
     args = p.parse_args(argv)
     if args.connect and args.no_phone:
         p.error("argument --connect: not allowed with argument --no-phone")
+    try:
+        args.overrides, args.sources = _command_line_settings(args)
+    except ValueError as exc:
+        p.error(str(exc))
     return args
+
+
+def yaml_text(value) -> str:
+    """A value the way it's written in local.yaml (and on the command line)."""
+    import yaml
+
+    return yaml.safe_dump(value, default_flow_style=True).strip().removesuffix("\n...")
+
+
+def _command_line_settings(args) -> tuple[dict, dict]:
+    """The settings given on the command line: ({setting: value}, {setting: what was
+    typed}). The setting's own option and its short form may both be given, but
+    only with the same value."""
+    values: dict = {}
+    sources: dict = {}
+
+    def given(name, value, text):
+        if name in values and values[name] != value:
+            raise ValueError(f"{sources[name]} and {text} disagree; give {name} once")
+        values.setdefault(name, value)
+        sources.setdefault(name, text)
+
+    for key, raw in vars(args).items():
+        if key.startswith("set:"):
+            name = key[4:]
+            try:
+                value = parse_value(raw)
+            except ValueError as exc:
+                raise ValueError(f"argument {option_name(name)}: {exc}") from None
+            given(name, value, f"{option_name(name)} {raw}")
+    if args.camera is not None:
+        given("camera.index", args.camera, f"--camera {args.camera}")
+    if args.mode:
+        given("cursor.mode", args.mode, f"--mode {args.mode}")
+    if args.no_preview:
+        given("preview.enabled", False, "--no-preview")
+    if args.start_paused:
+        given("pause.start_paused", True, "--start-paused")
+    if args.phone:
+        given("phone.enabled", True, "--phone")
+    if args.no_phone:
+        given("phone.enabled", False, "--no-phone")
+    if args.connect:  # the Wi-Fi address changes each time: given per run, not saved
+        given("phone.connect", args.connect, f"--connect {args.connect}")
+        given("phone.enabled", True, f"--connect {args.connect}")
+    if args.dry_run:
+        given("run.dry_run", True, "--dry-run")
+    if args.verbose:
+        given("run.verbose", True, "-v")
+    return values, sources
 
 
 def _wifi_address(text: str) -> str:
@@ -483,40 +588,32 @@ def main(argv=None) -> None:
 
 def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
     try:
-        cfg = load_config(args.config)
+        # The command line is the last layer: the same checks as local.yaml.
+        cfg = load_config(args.config, args.overrides)
     except (OSError, ValueError, TypeError) as exc:
         # TypeError: a wrong kind of value that slipped past the checks; still a
         # config problem, so report it the same way rather than with a traceback.
-        sys.exit(f"Config error: {exc}")
+        msg = str(exc)
+        given = [text for name, text in args.sources.items() if name in msg]
+        sys.exit(f"Config error: {msg}"
+                 + (f" (from the command line: {', '.join(given)})" if given else ""))
     for warning in cfg["_warnings"]:
         print(f"Config warning: {warning}")
-    if args.connect:  # the Wi-Fi address changes each time: given per run, not saved
-        cfg["phone"]["connect"] = args.connect
-    if args.phone or args.connect:
-        cfg["phone"]["enabled"] = True
-    if args.no_phone:
-        cfg["phone"]["enabled"] = False
+    # --dry-run / -v are run.dry_run / run.verbose: a file can set them too.
+    args.dry_run, args.verbose = cfg["run"]["dry_run"], cfg["run"]["verbose"]
     if cfg["phone"]["enabled"]:
         from .phone import apply_settings
 
+        index = cfg["camera"]["index"]
         apply_settings(cfg)  # read the phone's virtual camera, at the size it sends
         node = int(cfg["phone"]["video_device"])
-        if args.camera is not None and args.camera != node:
+        if "camera.index" in args.overrides and index != node:
             # scrcpy would send the phone's picture to /dev/video<node> while the app
             # read another camera: the phone would be started but never used.
-            sys.exit(f"--camera {args.camera} can't be used with the phone camera, which "
-                     f"is /dev/video{node} (phone.video_device). For the laptop camera, "
-                     f"add --no-phone: {command()} --no-phone --camera {args.camera}")
-    if args.camera is not None:
-        cfg["camera"]["index"] = args.camera
-    if args.scroll_method:
-        cfg["scroll"]["method"] = args.scroll_method
-    if args.mode:
-        cfg["cursor"]["mode"] = args.mode
-    if args.no_preview:
-        cfg["preview"]["enabled"] = False
-    if args.start_paused:
-        cfg["pause"]["start_paused"] = True
+            text = args.sources["camera.index"]
+            sys.exit(f"{text} can't be used with the phone camera, which is "
+                     f"/dev/video{node} (phone.video_device). For the laptop camera, "
+                     f"add --no-phone: {command()} --no-phone {text}")
 
     if args.calibrate:
         from .calibrate import run_calibration
@@ -688,6 +785,8 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
         if cfg["_loaded"]:
             folder = Path(cfg["_config_dir"])
             print("Also loaded: " + ", ".join(shown(n, folder) for n in cfg["_loaded"]))
+        if args.sources:
+            print("Command line: " + ", ".join(dict.fromkeys(args.sources.values())))
         if device == "absolute" and "calibration.yaml" not in cfg["_loaded"]:
             print("Tip: if the cursor reaches the right/bottom screen edge too early, "
                   f"run: {command()} --calibrate")

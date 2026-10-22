@@ -201,7 +201,63 @@ DEFAULTS: dict[str, Any] = {
         "window_name": "gesture-control",
         "show_landmarks": True,
     },
+    "run": {
+        "dry_run": False,   # --dry-run: print the actions instead of moving the mouse
+        "verbose": False,   # -v: print every action
+    },
 }
+
+
+# -- the command line: every setting is also an option -----------------------------------
+
+def setting_names(ref: dict[str, Any] = DEFAULTS, prefix: str = "") -> list[str]:
+    """Every setting's full name, e.g. "pinch.start", "cursor.relative.gain_slow"."""
+    out = []
+    for key, value in ref.items():
+        if isinstance(value, dict):
+            out += setting_names(value, f"{prefix}{key}.")
+        else:
+            out.append(prefix + key)
+    return out
+
+
+def option_name(setting: str) -> str:
+    """The command-line option for a setting: dots and underscores become dashes,
+    e.g. cursor.relative.gain_slow -> --cursor-relative-gain-slow."""
+    return "--" + setting.replace(".", "-").replace("_", "-")
+
+
+def default_of(setting: str) -> Any:
+    node: Any = DEFAULTS
+    for part in setting.split("."):
+        node = node[part]
+    return node
+
+
+def parse_value(text: str) -> Any:
+    """A command-line value, read the way the same text would be in local.yaml:
+    true / false, numbers, words, auto, null, lists like [0.9, 0.95]."""
+    try:
+        value = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        problem = getattr(exc, "problem", None) or "invalid value"
+        raise ValueError(f"can't read {text!r} ({problem}); write it as in local.yaml, "
+                         "e.g. 0.3, true, auto or [0.9, 0.95]") from None
+    if isinstance(value, dict):
+        raise ValueError(f"{text!r} is a section, not a value")
+    return value
+
+
+def _nest(flat: dict[str, Any]) -> dict[str, Any]:
+    """{"pinch.start": 0.3} -> {"pinch": {"start": 0.3}}"""
+    out: dict[str, Any] = {}
+    for name, value in flat.items():
+        node = out
+        *parents, leaf = name.split(".")
+        for part in parents:
+            node = node.setdefault(part, {})
+        node[leaf] = value
+    return out
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -297,9 +353,16 @@ def _check_types(cfg: dict[str, Any], ref: dict[str, Any] = DEFAULTS, prefix: st
                 raise ValueError(f"{name} must be a word or text (got {value!r})")
 
 
-def load_config(path: str | Path | None = None) -> dict[str, Any]:
+def load_config(path: str | Path | None = None,
+                overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     """Load DEFAULTS, then gestures.yaml, then calibration.yaml and local.yaml
-    from the same folder (if present). Missing keys fall back to defaults."""
+    from the same folder (if present), then `overrides` (settings given on the
+    command line, by full name: {"pinch.start": 0.3}). Missing keys fall back to
+    defaults. Every layer goes through the same checks."""
+    overrides = dict(overrides or {})
+    unknown = [name for name in overrides if name not in setting_names()]
+    if unknown:
+        raise ValueError(f"unknown setting(s) {', '.join(unknown)}")
     cfg_path = Path(path) if path else DEFAULT_CONFIG_PATH
     cfg = copy.deepcopy(DEFAULTS)
     warnings: list[str] = []
@@ -331,6 +394,8 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         for key in _unknown_keys(data, DEFAULTS):
             warnings.append(f"{f.name}: unknown setting '{key}' (typo?) - ignored")
         cfg = _deep_merge(cfg, data)
+    cfg = _deep_merge(cfg, _nest(overrides))  # the command line wins over every file
+    cfg["_cli"] = sorted(overrides)
     cfg["_loaded"] = loaded
     cfg["_config_dir"] = str(cfg_path.parent)
     cfg["_warnings"] = warnings

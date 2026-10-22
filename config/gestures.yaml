@@ -7,6 +7,8 @@
 #     start: 0.32
 #
 # README.md > Configuration explains every setting. Restart the app after editing.
+# Any setting can also be given for one run on the command line: pinch.start is
+# --pinch-start 0.32 (README > Configuration > On the command line).
 
 camera:
   index: 0              # /dev/video0
@@ -220,3 +222,11 @@ preview:
   enabled: true
   window_name: gesture-control
   show_landmarks: true
+
+run:
+  dry_run: false          # print the actions instead of moving the mouse (--dry-run)
+  verbose: false          # print every action (-v)
+
+# Every setting above is also a command-line option, for one run: its name with dots
+# and underscores as dashes, e.g. --pinch-start 0.32, --phone-facing front,
+# --cursor-relative-gain-slow 0.03. The command line wins over every file.
