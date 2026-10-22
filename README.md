@@ -223,6 +223,8 @@ With `-v`, scrcpy's own messages are shown, starting with the exact scrcpy comma
 | `scrcpy stopped before the camera started` | The message shows scrcpy's last words and a likely fix: phone not connected, debugging prompt not accepted, a size the camera doesn't offer, or a changed Wi-Fi port |
 | Several devices listed by `adb devices` | Set `phone.serial` to the one to use, or `adb disconnect` the Wi-Fi connection |
 | `The phone camera stopped (scrcpy quit)` while running | The cable came out or the phone stopped the camera. Held buttons are released; reconnect and restart the app |
+| `No frames from the phone for N s` (scrcpy still running) | The phone stopped sending pictures: check the cable or Wi-Fi, and that the phone's camera is still on (unlock the phone if it locked) |
+| `--camera N can't be used with the phone camera` | With the phone on, the app reads the phone's virtual camera. For the laptop camera, add `--no-phone` (`uv run gesture-control --no-phone --camera 0`) |
 | Lower fps than expected in the preview | Use USB instead of Wi-Fi, lower `phone.bit_rate` (e.g. `4M`), or keep `size: 640x480` |
 | Sideways or upside-down picture | Turn the phone (landscape for the back camera usually works); the app doesn't rotate the image yet |
 | Hand moves right, cursor moves left | Keep `camera.mirror: true` (both phone cameras need it) |
@@ -451,6 +453,7 @@ touchpad settings block the swipe, the app says so at startup and uses the wheel
 | It scrolls sideways when I meant up/down | Start the swipe straight up or down: the first movement picks the direction. Or `scroll:` `horizontal: false` |
 | The image viewer zooms instead of panning, or a pinch-zoomed page won't scroll sideways | That's what apps do with a mouse wheel. Check the startup messages: with `scroll.method: touchpad` (the default) the app scrolls with a touchpad swipe instead, unless GNOME's touchpad settings block it (it says why) |
 | Sideways does nothing in an app | Run `--scroll-test` with the pointer over that app. If your laptop touchpad doesn't scroll it sideways either, the content isn't wider than the window |
+| In Firefox, sideways scrolling right after scrolling up/down does nothing (ongoing chats, web apps with their own scroll panel), but works after a pause | Firefox sends all scrolling for 1.5 s after a scroll to the panel it started on, and that panel can't move sideways. A real touchpad does the same (it drifts diagonally instead). Pause about 1.5 s before scrolling sideways, or in Firefox's `about:config` lower `mousewheel.transaction.timeout` (default `1500`, e.g. `500`). Lower values have a cost: a pause that long mid-scroll can hand the scroll to an inner box (a code block) that slides under the pointer |
 | Scrolling goes further / less far than I'd like | `scroll:` `touchpad:` `mm_per_notch`: higher scrolls further for the same hand movement (or `notches_per_height`, which works for both methods) |
 | I want diagonal scrolling (maps) | `scroll:` `axis_lock: false` |
 | It glides when I don't want | Stop your hand before opening your palm, raise `fling.min_speed`, or set `fling.enabled: false` |
@@ -482,6 +485,8 @@ a laptop touchpad.
 - **Hands spread 1.5x = fingers spread 1.5x**, and the app zooms by that ratio. If you
   spread or close your hands a lot, the virtual fingers lift and land again in the
   middle of the touchpad (a re-grip, as on a real touchpad), so you can keep going.
+  No zoom is lost at a re-grip: the fingers use the room to the edge first, and the
+  rest of your spread carries into the next grip.
 - **The touchpad must be turned on** in Settings > Mouse & Touchpad. GNOME's touchpad
   settings apply to the virtual touchpad too. If the touchpad is off, or set to turn off
   while a mouse is connected (this app's virtual pointer counts as a mouse), the app
@@ -600,7 +605,11 @@ the wrong kind of value (text where a number or `true` / `false` belongs, a sing
 value where a section belongs), negative or zero speeds and gains, `pinch.release` not
 above `pinch.start`, `pose.extend_ratio` not above `curl_ratio`, frame counts below 1
 or not whole numbers, `tracker.num_hands` below 1, filter cutoffs of 0, negative
-deadzones and times, and a cursor region outside 0..1.
+deadzones and times, a cursor region outside 0..1, a `camera.fourcc` that isn't 4
+characters, `pinch.min_facing` or a tracker confidence outside 0..1 (above 1 they
+could never be reached: no click, or no hand found), and a `zoom.touchpad.start_mm`
+that leaves the virtual fingers less than 10 mm to move either way on that touchpad
+size (the message gives the allowed range).
 
 When `config/local.yaml` loads, the startup line `Also loaded: config/local.yaml`
 confirms it. `uv run gesture-control --dry-run` is a safe way to try changes: everything
@@ -650,7 +659,7 @@ about 9 cm), so they don't change with distance from the camera.
 | `index` | `0` | Camera device number: `0` = `/dev/video0` (`--camera N` overrides it) |
 | `width`, `height` | `640`, `480` | Capture resolution. Higher doesn't improve tracking, it only costs speed. If the camera doesn't offer this size, a startup note says which size it uses instead; the app works with that size |
 | `fps` | `30` | Requested frame rate (your webcam's maximum is 30) |
-| `fourcc` | `MJPG` | Camera format. `MJPG` gives full frame rate; `YUYV` is the uncompressed alternative |
+| `fourcc` | `MJPG` | Camera format, 4 characters. `MJPG` gives full frame rate; `YUYV` is the uncompressed alternative |
 | `mirror` | `true` | Mirror the image so moving your hand right moves the cursor right |
 | `lock_framerate` | `true` | Stop auto-exposure lowering the frame rate in dim light (sets the camera's `exposure_dynamic_framerate` to 0 while the app runs and puts it back at exit; a camera already at 0 is left at 0) |
 | `buffers` | `2` | Frame buffers for the camera (at least 2). With 1, many webcams skip every third frame (20 fps instead of 30). More buffers add no lag: the app always takes the newest frame |
@@ -662,7 +671,7 @@ about 9 cm), so they don't change with distance from the camera.
 | `model` | `models/hand_landmarker.task` | Model file, relative to the project folder. The default one downloads automatically and is checked ([Setup, step 4](#4-the-app)); a model of your own is used as it is |
 | `num_hands` | `2` | Hands to track. 2 is needed for two-hand zoom; one-hand gestures follow the hand you were already using. Set 1 if you don't use zoom |
 | `second_hand_check_every` | `5` | With one hand in view, look for a second hand only every N frames (finding one switches to full two-hand tracking). Looking every frame (1) roughly doubles the CPU time per frame. The hand you're using is always tracked on every frame by the one-hand tracker, so these checks don't make it jitter |
-| `min_detection_confidence` | `0.6` | How sure the model must be to find a new hand. Lower finds hands sooner, but with more false detections |
+| `min_detection_confidence` | `0.6` | How sure the model must be to find a new hand (0..1, like the next two). Lower finds hands sooner, but with more false detections |
 | `min_presence_confidence` | `0.6` | How sure it must be that the hand is still there |
 | `min_tracking_confidence` | `0.5` | Below this it searches for the hand again instead of tracking it |
 
@@ -683,7 +692,7 @@ about 9 cm), so they don't change with distance from the camera.
 | `confirm_frames` | `3` | Frames below `start` before the click fires. Higher = fewer accidental clicks, slightly slower |
 | `min_finger_reach` | `1.05` | Left pinch only counts if the index fingertip is at least this far from the wrist (in palm lengths), so a fist isn't read as a click. It also tells a bent-finger pinch (above it) from a fist (below it) |
 | `right_min_reach` | `0.0` | Same check for the middle finger and right click. `0` = off |
-| `min_facing` | `0.6` | Pinches only start when your hand faces the camera at least this squarely (1 = square on, 0 = edge-on) |
+| `min_facing` | `0.6` | Pinches only start when your hand faces the camera at least this squarely (1 = square on, 0 = edge-on; 0..1) |
 
 #### `cursor`
 
@@ -754,7 +763,7 @@ Absolute mode only:
 | `enabled` | `true` | Two pointing hands zoom. Needs `tracker.num_hands: 2` |
 | `method` | `touchpad` | `touchpad`: a true two-finger pinch on a virtual touchpad (smooth, centred on the pointer; needs the touchpad turned on and an app with pinch support). `ctrl_scroll`: Ctrl + smooth mouse wheel (works in more apps, in steps). `keys`: Ctrl+= / Ctrl+− taps |
 | `touchpad.gain` | `1.0` | Finger spread = hand spread ^ gain. Higher = zooms faster |
-| `touchpad.start_mm` | `45` | Distance between the virtual fingers when a pinch starts. The fingers sit on a diagonal, like a thumb and index finger |
+| `touchpad.start_mm` | `45` | Distance between the virtual fingers when a pinch starts. The fingers sit on a diagonal, like a thumb and index finger. It must leave at least 10 mm to move apart and together on the touchpad: 26 to 80 for the default size (smaller `width_mm` / `height_mm` lower the top; the error message gives the range) |
 | `touchpad.width_mm`, `height_mm` | `100`, `65` | Size of the virtual touchpad. The fingers stay inside the zones where libinput ignores palms (outer 8% of the width) and thumbs (bottom 15%) |
 | `notch_ratio` | `1.15` | `ctrl_scroll` / `keys`: spreading your hands this many times further = one zoom step. Lower = zooms faster |
 | `invert` | `false` | `true` = spread to zoom out |
@@ -780,7 +789,7 @@ Absolute mode only:
 | `phone.facing` | `back` | Which camera: `back`, `front` or `external` |
 | `phone.size` | `640x480` | Picture size; one of the sizes `scrcpy --video-source=camera --list-camera-sizes` lists. The app reads the virtual camera at this size |
 | `phone.fps` | `30` | Frame rate asked of the phone |
-| `phone.bit_rate` | `8M` | Video bit rate from the phone; lower it (e.g. `4M`) if the picture stutters over Wi-Fi |
+| `phone.bit_rate` | `8M` | Video bit rate from the phone (`8M`, `4000K` or a plain number like `8000000`); lower it (e.g. `4M`) if the picture stutters over Wi-Fi |
 | `phone.video_device` | `10` | The virtual camera's number: `/dev/video10` (v4l2loopback `video_nr`) |
 | `phone.connect` | `""` | Empty: USB. Wi-Fi: the address and port from the phone's Wireless debugging screen |
 | `phone.serial` | `""` | Only with several phones or connections: which one, as `adb devices` lists it |
@@ -848,8 +857,10 @@ double clicks, drags, scrolling and flings (up/down and sideways, with the axis 
 both modes, the touchpad-swipe scrolling (finger directions, re-grips, lifting only
 when still), config loading and validation, where config and the model live (project
 folder or installed), the two-hand tracking switch (with fake trackers), clean shutdown
-on Ctrl+C / `kill`, the stalled-camera preview, and the camera reader's shutdown (with
-a fake camera). They read `config/gestures.yaml` but never your
+on Ctrl+C / `kill`, the stalled-camera preview, the camera reader's shutdown (with
+a fake camera), the phone camera (with a fake scrcpy), and the main loop itself with a
+fake camera and hand tracker (startup errors, and the controller running on each
+frame's capture time). They read `config/gestures.yaml` but never your
 `local.yaml` or `calibration.yaml`, so your own settings don't change the results.
 
 The model download is tested offline. One test checks that the pinned model URL still
@@ -878,6 +889,7 @@ src/gesture_control/
   trackball.py    trackball output setup checks and --calibrate-trackball
   display.py      screen size and scale from GNOME (D-Bus)
   touchpad.py     virtual touchpad for the two-hand pinch
+  scrolling.py    scrolling as a virtual touchpad swipe, or the mouse wheel
   capture.py      threaded camera reader (newest frame only)
   phone.py        Android phone as the camera: runs scrcpy (--phone)
   tracker.py      MediaPipe Hand Landmarker wrapper

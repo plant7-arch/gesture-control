@@ -188,3 +188,36 @@ def test_pointer_device_declares_the_sideways_wheel(monkeypatch, mode):
     VirtualPointer(mode=mode, dry_run=False, settle=0)
     rel = seen[e.EV_REL]
     assert {e.REL_WHEEL, e.REL_HWHEEL, e.REL_WHEEL_HI_RES, e.REL_HWHEEL_HI_RES} <= set(rel)
+
+
+# -- bounded event records (v0.18.1) -------------------------------------------------------
+
+def test_event_records_stay_bounded_in_a_long_session(tp, fake_clock):
+    """v0.18.1 bug: the zoom touchpad and the scroll pad kept every event they sent,
+    for as long as the app ran (about 1,800 per minute of zooming or scrolling)."""
+    from gesture_control.scrolling import PadScroller
+
+    pad = PadScroller(5.0, dry_run=True, settle=0)
+    t = 0.0
+    for _ in range(30 * 60 * 5):          # 5 minutes of scrolling at 30 fps
+        pad.scroll(0, 24)
+        t += 1 / 30
+        pad.flush(t)
+    assert len(pad.events) <= 2 * tpm.EVENT_HISTORY
+    assert pad.events[-1][0] in ("move", "up", "down")   # the newest are kept
+
+    tp.begin(45)
+    for i in range(30 * 60 * 5):          # 5 minutes of zooming
+        tp.move(30 + (i % 40))
+    assert len(tp.events) <= 2 * tpm.EVENT_HISTORY
+    assert tp.events[-1] == ("move", pytest.approx(30 + (30 * 60 * 5 - 1) % 40))
+
+
+def test_start_range_leaves_room_both_ways():
+    """The config check for zoom.touchpad.start_mm uses the touchpad's own geometry."""
+    for w, h in ((100, 65), (60, 40), (150, 100)):
+        lo, hi = tpm.separation_range(w, h)
+        s_lo, s_hi = tpm.start_range(w, h)
+        assert s_lo >= lo + tpm.START_ROOM_MM - 0.05 and s_hi <= hi - tpm.START_ROOM_MM + 0.05
+    assert tpm.start_range(100, 65) == (26.0, 80.1)
+    assert tpm.start_range(60, 40) == (26.0, 41.3)

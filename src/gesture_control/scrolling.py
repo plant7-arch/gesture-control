@@ -29,6 +29,7 @@ import math
 import time
 
 from .pointer import HI_RES_PER_NOTCH, make_uinput
+from .touchpad import record
 
 PAD_MM = 1000.0            # size of the virtual scroll pad (square)
 RES = 10                   # device units per mm
@@ -60,7 +61,8 @@ class PadScroller:
         self._land_t = self._last_move_t = self._last_event_t = 0.0
         self._regrip_since: float | None = None
         self._tracking_id = 0
-        self.events: list[tuple] = []  # what was sent: ("down"|"move", x, y) / ("up",)
+        # The last events sent: ("down"|"move", x, y) / ("up",). Bounded (see record()).
+        self.events: list[tuple] = []
         self._ui = None
         if dry_run:
             return
@@ -171,18 +173,18 @@ class PadScroller:
         self._pos = self.centre
         self._down = True
         self._land_t = self._last_move_t = self._last_event_t = now
-        self.events.append(("down", *self._pos))
+        record(self.events, ("down", *self._pos))
         self._fingers(*self._pos, new=True)
 
     def _move(self, x: float, y: float, now: float) -> None:
         self._pos = (x, y)
         self._last_event_t = now
-        self.events.append(("move", x, y))
+        record(self.events, ("move", x, y))
         self._fingers(x, y, new=False)
 
     def _lift(self) -> None:
         self._down = False
-        self.events.append(("up",))
+        record(self.events, ("up",))
         if self.dry_run:
             return
         e, w = self._e, self._ui.write

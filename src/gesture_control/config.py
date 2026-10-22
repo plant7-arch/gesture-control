@@ -13,6 +13,7 @@ Where the files live depends on how the app is run:
 from __future__ import annotations
 
 import copy
+import math
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -336,6 +337,9 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     for key in ("connect", "serial"):  # `connect:` with nothing after it = empty
         if cfg["phone"][key] is None:
             cfg["phone"][key] = ""
+    bit_rate = cfg["phone"]["bit_rate"]
+    if _is_number(bit_rate) and bit_rate == int(bit_rate) and bit_rate > 0:
+        cfg["phone"]["bit_rate"] = str(int(bit_rate))  # 8000000 = "8000000" for scrcpy
     _check_types(cfg)
     model = Path(cfg["tracker"]["model"]).expanduser()
     if not model.is_absolute():
@@ -355,6 +359,16 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         raise ValueError("zoom.touchpad.width_mm must be at least 60 and height_mm at least 40")
     if not 20 <= float(tpc["start_mm"]) <= 70:
         raise ValueError("zoom.touchpad.start_mm must be between 20 and 70")
+    from .touchpad import START_ROOM_MM, start_range  # here: touchpad.py imports this module
+
+    lo, hi = start_range(float(tpc["width_mm"]), float(tpc["height_mm"]))
+    if not lo <= float(tpc["start_mm"]) <= hi:
+        # Started too close to the pad's limits, the fingers can't move apart (or
+        # together) and keep re-gripping instead of zooming.
+        raise ValueError(
+            f"zoom.touchpad.start_mm ({tpc['start_mm']:g}) must be between "
+            f"{math.ceil(lo)} and {math.floor(hi)} for a {tpc['width_mm']:g} x {tpc['height_mm']:g} mm touchpad, "
+            f"so the fingers have at least {START_ROOM_MM:g} mm to zoom in and out")
     nr = cfg["zoom"]["notch_ratio"]
     if not isinstance(nr, (int, float)) or isinstance(nr, bool) or not 1.01 <= nr <= 3:
         raise ValueError("zoom.notch_ratio must be a number between 1.01 and 3")
@@ -368,14 +382,14 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
         raise ValueError("cursor.relative.output must be auto, trackball, tablet or mouse")
     tc = cfg["cursor"]["relative"]["trackball_counts"]
     if not (isinstance(tc, (list, tuple)) and len(tc) == 2
-            and all(isinstance(v, (int, float)) and v >= 0 for v in tc)):
+            and all(_is_number(v) and v >= 0 for v in tc)):
         raise ValueError("cursor.relative.trackball_counts must be two numbers >= 0 "
                          "(0 = automatic; set by --calibrate-trackball)")
     if cfg["cursor"]["anchor"] not in ("knuckles", "index_mcp", "index_tip", "palm_center"):
         raise ValueError("cursor.anchor must be knuckles, index_mcp, index_tip or palm_center")
     scale = cfg["cursor"]["abs_scale"]
     if (not isinstance(scale, (list, tuple)) or len(scale) != 2
-            or not all(isinstance(v, (int, float)) and 0.1 <= v <= 1.0 for v in scale)):
+            or not all(_is_number(v) and 0.1 <= v <= 1.0 for v in scale)):
         raise ValueError("cursor.abs_scale must be two numbers between 0.1 and 1.0")
     cfg["cursor"]["abs_scale"] = [float(scale[0]), float(scale[1])]
     if cfg["double_click"]["os_time_ms"] == "auto":
@@ -468,9 +482,18 @@ def _check_ranges(cfg: dict[str, Any]) -> None:
                  "scroll.fling.stack.window_s", "scroll.fling.stack.settle_ms",
                  "zoom.settle_ms", "zoom.ctrl_release_ms", "double_click.window_ms",
                  "double_click.max_move", "pinch.min_finger_reach", "pinch.right_min_reach")
-    for p in ("pinch.min_facing", "scroll.fling.stack.factor"):
-        if not 0 <= num(p) <= 1.5:
-            raise ValueError(f"{p} must be between 0 and 1.5")
+    if not 0 <= num("scroll.fling.stack.factor") <= 1.5:
+        raise ValueError("scroll.fling.stack.factor must be between 0 and 1.5")
+    # Shares and probabilities: above 1 they can never be reached, so the feature
+    # would silently stop working (no click could start, no hand be detected).
+    for p in ("pinch.min_facing", "tracker.min_detection_confidence",
+              "tracker.min_presence_confidence", "tracker.min_tracking_confidence"):
+        if not 0 <= num(p) <= 1:
+            raise ValueError(f"{p} must be between 0 and 1 (got {num(p):g})")
+    fourcc = cfg["camera"]["fourcc"]
+    if len(fourcc) != 4 or not fourcc.isascii() or not fourcc.isprintable():
+        raise ValueError(f"camera.fourcc must be 4 characters, e.g. MJPG or YUYV "
+                         f"(got {fourcc!r})")
     r = cfg["cursor"]["region"]
     if not (0 <= r["x_min"] < r["x_max"] <= 1 and 0 <= r["y_min"] < r["y_max"] <= 1):
         raise ValueError("cursor.region must have 0 <= x_min < x_max <= 1 and "

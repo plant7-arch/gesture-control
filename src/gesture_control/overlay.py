@@ -49,6 +49,9 @@ def _shade(img, x0, y0, x1, y1, k=0.4):
 
 
 class Overlay:
+    # The question under "No camera frames" (app.py sets the phone's version).
+    stall_hint = "is another app using the camera?"
+
     def __init__(self, cfg: dict[str, Any]):
         self.cfg = cfg
         self.name = cfg["preview"]["window_name"]
@@ -188,11 +191,12 @@ class Overlay:
             w, h = int(self.cfg["camera"]["width"]), int(self.cfg["camera"]["height"])
             img = np.full((h, w, 3), 32, np.uint8)
         h, w = img.shape[:2]
-        _shade(img, 0, h // 2 - 40, w, h // 2 + 44, 0.3)
+        _shade(img, 0, h // 2 - 40, w, h // 2 + 64, 0.3)
         _text(img, f"No camera frames for {seconds:.0f} s", (20, h // 2 - 10), ORANGE, 0.7, 2)
-        _text(img, "Is another app using the camera? Buttons and keys are released.",
-              (20, h // 2 + 18), WHITE, 0.45)
-        _text(img, "q / Esc to quit", (20, h // 2 + 38), GREY, 0.45)
+        hint = self.stall_hint
+        _text(img, hint[0].upper() + hint[1:], (20, h // 2 + 18), WHITE, 0.45)
+        _text(img, "Buttons and keys are released.", (20, h // 2 + 38), WHITE, 0.45)
+        _text(img, "q / Esc to quit", (20, h // 2 + 58), GREY, 0.45)
         return img
 
     def show_stalled(self, seconds: float) -> int:

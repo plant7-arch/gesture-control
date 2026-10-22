@@ -804,6 +804,63 @@ def test_two_pointing_hands_zoom_like_a_touchpad(zoom_rig):
     assert all(b[1] >= a[1] for a, b in zip(r.tp.events[1:], r.tp.events[2:]))
 
 
+@pytest.mark.parametrize("pad", [
+    {},                                                       # the default 100 x 65
+    {"start_mm": 70},                                         # widest allowed start
+    {"width_mm": 60, "height_mm": 40, "start_mm": 41},        # smallest pad, widest start
+    {"width_mm": 60, "height_mm": 40, "start_mm": 26},        # smallest pad, closest start
+])
+@pytest.mark.parametrize("direction", ["in", "out"])
+def test_every_allowed_pad_and_start_can_zoom_both_ways(zoom_rig, pad, direction):
+    """v0.18.1 bug: a start_mm at or past the pad's widest finger separation passed
+    the config check, and zoom-in then only re-gripped (on a 60 x 40 pad with
+    start_mm 60: 0 finger moves and 11 landings in 3 s). Every start the config
+    now allows moves the fingers at least START_ROOM_MM each way before a re-grip."""
+    from gesture_control.config import _check_ranges
+    from gesture_control.touchpad import START_ROOM_MM
+
+    r = zoom_rig(zoom={"touchpad": pad})
+    _check_ranges(r.cfg)   # (load_config would also refuse a bad start_mm)
+    _zoom(r, [3.0] * 10)
+    start = r.tp.separation
+    _zoom(r, _ramp(3.0, 9.0 if direction == "in" else 1.0, 30))
+    events = list(r.tp.events)
+    first_up = next((i for i, e in enumerate(events) if e[0] == "up"), len(events))
+    grip = [s for kind, s in events[:first_up] if kind == "move"]
+    assert grip, "the fingers never moved"
+    assert max(abs(s - start) for s in grip) >= START_ROOM_MM - 0.5
+
+
+def _finger_zoom(events) -> float:
+    """Total zoom the fingers made: the product of each grip's separation ratio."""
+    zoom, start, cur = 1.0, None, None
+    for kind, s in events:
+        if kind == "down":
+            start = cur = s
+        elif kind == "move":
+            cur = s
+        elif kind == "up" and start:
+            zoom *= cur / start
+            start = None
+    return zoom * (cur / start if start else 1.0)
+
+
+@pytest.mark.parametrize("frames", [60, 30, 15])     # 2 s, 1 s, 0.5 s
+@pytest.mark.parametrize("ratio, invert", [(8.0, False), (1 / 8, False), (8.0, True)])
+def test_zoom_across_regrips_matches_the_hands(zoom_rig, frames, ratio, invert):
+    """v0.18.1 bug: a re-grip dropped the zoom of the frame that crossed the pad's
+    edge, and anything spread while the fingers waited at the edge: spreading the
+    hands 8x gave 7.46x (2 s), 6.96x (1 s) or 4.49x (0.5 s). Now the fingers reach
+    the edge first and the rest carries into the next grip."""
+    r = zoom_rig(zoom={"invert": invert})
+    _zoom(r, [2.0] * 10)
+    _zoom(r, [2.0 * ratio ** (i / frames) for i in range(frames + 1)])
+    _zoom(r, [2.0 * ratio] * 30)
+    assert sum(1 for kind, _ in r.tp.events if kind == "down") >= 2   # it did re-grip
+    expected = 1 / ratio if invert else ratio
+    assert _finger_zoom(r.tp.events) == pytest.approx(expected, rel=0.02)
+
+
 def test_hands_together_zoom_out(zoom_rig):
     r = zoom_rig()
     _zoom(r, [4.0] * 10)
@@ -1088,3 +1145,57 @@ def test_glide_never_turns_round(boost, axis):
     steps = [e[1] for e in r.ptr.of(axis)]
     assert steps and all(s > 0 for s in steps)
     assert r.ptr.of("hscroll" if axis == "scroll" else "scroll") == []
+
+
+# -- the clock (v0.18.1: frames are timed when captured) -----------------------------------
+
+def test_a_frame_captured_before_a_stall_report_doesnt_turn_time_back():
+    """With capture times, a frame captured just before the 1 s read timeout can
+    arrive after stalled() was called with a later time. Time must not go back:
+    no negative intervals, no glide restarting, no cursor jump."""
+    r = Rig(make_config(cursor={"relative": {"output": "tablet"}}))
+    r.point(10)
+    r.move(10, dx=0.01, pose=POINT)
+    stall_t = r.t + 1.0
+    r.ctl.stalled(stall_t)
+    before = len(r.ptr.of("abs"))
+    st = r.ctl.update(feats_of(POINT), (r.anchor[0] + 0.01, r.anchor[1]), stall_t - 0.5,
+                      0.16)
+    assert r.ctl._last_t == stall_t            # given the stall's time, not an earlier one
+    assert not r.ctl.gliding and st.mode == Mode.IDLE   # released by the stall
+    assert len(r.ptr.of("abs")) == before
+    r.t = stall_t
+    r.move(15, dx=0.01, pose=POINT)            # pointing resumes...
+    xs = [e[1] for e in r.ptr.of("abs")[before:]]
+    assert xs, "the cursor never moved again"
+    assert max(abs(b - a) for a, b in zip([xs[0]] + xs, xs)) < 0.05   # ...without a jump
+
+
+def feats_of(pose):
+    from conftest import feats
+
+    return feats(pose=pose)
+
+
+def test_capture_times_give_steadier_cursor_steps_than_after_tracking_times():
+    """Why the app passes capture times: with your measured jitter (after-tracking
+    intervals 7.7-62.7 ms for frames 31-37 ms apart), a hand moving steadily gets
+    cursor steps more than twice as uneven as with the capture times."""
+    import random
+    import statistics
+
+    rnd = random.Random(1)
+    cap = [100.0]
+    for _ in range(300):
+        cap.append(cap[-1] + rnd.gauss(1 / 30, 0.0019))
+    after = [c + rnd.uniform(0.010, 0.033) for c in cap]   # varying tracking time
+
+    def steps(times):
+        r = Rig(make_config(cursor={"relative": {"output": "mouse"}}))
+        for i, t in enumerate(times):
+            r.ctl.update(feats_of(POINT), (0.3 + 0.3 * (cap[i] - cap[0]), 0.5), t, 0.16)
+        return [e[1] for e in r.ptr.of("rel")][20:]
+
+    steady, jittery = steps(cap), steps(after)
+    assert statistics.mean(steady) == pytest.approx(statistics.mean(jittery), rel=0.05)
+    assert statistics.stdev(jittery) > 2 * statistics.stdev(steady)

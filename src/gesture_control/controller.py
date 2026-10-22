@@ -74,7 +74,6 @@ class Status:
     left_armed: bool = False     # fingers seen apart: the next close will click
     left_block: str = ""         # fingertips closed but not clicking: why
     right_armed: bool = False
-    cursor: tuple[float, float] | None = None  # normalized screen position
     fist_progress: float = 0.0
     zoom_spread: float | None = None  # index-tip distance in palm lengths (two hands)
     zoom_hands: bool = False          # two pointing hands seen this frame
@@ -341,7 +340,7 @@ class GestureController:
         everything now, stop any glide, and start fresh when frames come back."""
         self._events = []
         self._actions = []
-        self._now = t
+        self._now = max(t, self._now)
         self.tick()
         self._stop_fling()
         self.scroller.release()  # lift the scroll pad's fingers too
@@ -368,7 +367,11 @@ class GestureController:
         zoom: (both hands pointing, index-tip spread in palm lengths) when two hands are
         visible, else None.
         rebase: the tracked hand switched (or jumped impossibly far) this frame: don't
-        turn the jump into cursor or scroll movement, and disarm pinches."""
+        turn the jump into cursor or scroll movement, and disarm pinches.
+        t: when the frame was captured (app.py passes the camera's timestamp). Time
+        never runs backwards here: a frame captured just before a stalled() call is
+        given that call's time."""
+        t = max(t, self._now)
         st = Status(paused=self.paused)
         self._events = []
         self._actions = []
@@ -724,7 +727,6 @@ class GestureController:
         fx, fy = self.cursor_filter(self._map(anchor), t)
         if hold or t < self._freeze_until:
             return
-        st.cursor = (float(fx), float(fy))
         if self._last_sent is not None:
             if max(abs(fx - self._last_sent[0]), abs(fy - self._last_sent[1])) < self.deadzone:
                 return
@@ -752,7 +754,6 @@ class GestureController:
         fx, fy = self.rel_filter(pos, t)
         prev, prev_t = self._prev_mapped, self._prev_t
         self._prev_mapped, self._prev_t = (fx, fy), t
-        st.cursor = (self._cursor[0], self._cursor[1])
         if prev is None or hold or t < self._freeze_until or t <= prev_t:
             return
         dxp = (fx - prev[0]) / palm_len  # hand movement in palm lengths
@@ -775,7 +776,6 @@ class GestureController:
         cx = min(max(self._cursor[0] + dx, 0.0), 1.0)
         cy = min(max(self._cursor[1] + dy, 0.0), 1.0)
         self._cursor = [cx, cy]
-        st.cursor = (cx, cy)
         self.pointer.move_abs(cx * self.abs_scale[0], cy * self.abs_scale[1])
 
     def _scroll_point(self, anchor: tuple[float, float]) -> Vec:
@@ -995,11 +995,21 @@ class GestureController:
             self._tp_base = tp.begin(self.tp_start_mm)
             self._tp_ref = x
             return
-        sep = self._tp_base * math.exp((x - self._tp_ref) * self.tp_gain * self.zoom_sign)
+        k = self.tp_gain * self.zoom_sign
+        sep = self._tp_base * math.exp((x - self._tp_ref) * k)
         if (sep > tp.max_sep or sep < tp.min_sep) and tp.contact_age >= tpm.MIN_CONTACT_S:
-            tp.end()                       # re-grip: lift and land again at the start
+            # Re-grip. First use the room left: move the fingers right to the edge.
+            # The spread beyond it isn't dropped either: the new grip starts as if
+            # it had already zoomed that much, so the next frame continues the zoom.
+            # (Re-gripping straight away lost the whole frame's zoom at each re-grip:
+            # 13% of an 8x zoom done in one second.)
+            edge = min(max(sep, tp.min_sep), tp.max_sep)
+            tp.move(edge)
+            excess = (x - self._tp_ref) - math.log(edge / self._tp_base) / k
+            tp.end()                       # lift and land again at the start
             self._tp_base = tp.begin(self.tp_start_mm)
-            self._tp_ref = x
+            self._tp_ref = x - excess
+            self._act("zoom in" if sep > edge else "zoom out", quiet=True)
             return
         if abs(sep - tp.separation) >= 0.05:
             zoom_in = sep > tp.separation

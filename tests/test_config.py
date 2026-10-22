@@ -154,6 +154,21 @@ def test_top_level_must_be_a_mapping(cfgdir):
     ("zoom:\n  touchpad:\n    start_mm: 90\n", "start_mm"),
     ("zoom:\n  touchpad:\n    width_mm: 30\n", "width_mm"),
     ("pinch:\n  min_facing: 2\n", "min_facing"),
+    # v0.18.1: values that used to load but crashed or silently broke a feature
+    ("camera:\n  fourcc: MJPEG\n", "camera.fourcc must be 4 characters"),  # crashed
+    ("camera:\n  fourcc: MJ\n", "camera.fourcc must be 4 characters"),
+    ("pinch:\n  min_facing: 1.2\n", "pinch.min_facing must be between 0 and 1"),
+    ("tracker:\n  min_detection_confidence: 1.5\n", "min_detection_confidence must be"),
+    ("tracker:\n  min_presence_confidence: -0.1\n", "min_presence_confidence must be"),
+    ("tracker:\n  min_tracking_confidence: 2\n", "min_tracking_confidence must be"),
+    # no room left to zoom in on the smallest pad
+    ("zoom:\n  touchpad:\n    width_mm: 60\n    height_mm: 40\n    start_mm: 60\n",
+     r"between 26 and 41 for a 60 x 40 mm touchpad"),
+    ("zoom:\n  touchpad:\n    width_mm: 60\n    height_mm: 40\n",   # default start 45
+     r"start_mm \(45\) must be between 26 and 41"),
+    ("zoom:\n  touchpad:\n    start_mm: 21\n", "between 26 and 80"),  # no room to zoom out
+    ("cursor:\n  relative:\n    trackball_counts: [true, true]\n", "trackball_counts"),
+    ("cursor:\n  abs_scale: [true, true]\n", "abs_scale"),
 ])
 def test_values_that_break_the_app_are_refused(cfgdir, text, message):
     _write(cfgdir, "local.yaml", text)
@@ -232,6 +247,11 @@ def test_wrong_kind_of_value_is_refused(cfgdir, text, message):
     "pinch:\n  right_min_reach: 0\n",
     "cursor:\n  region:\n    x_min: 0\n    x_max: 1\n",          # ints where floats are usual
     "camera:\n  width: 1280.0\n  height: 720\n",                 # 1280.0 is a whole number
+    "camera:\n  fourcc: YUYV\n",
+    "pinch:\n  min_facing: 1.0\n",
+    "tracker:\n  min_detection_confidence: 0\n  min_tracking_confidence: 1\n",
+    "zoom:\n  touchpad:\n    width_mm: 60\n    height_mm: 40\n    start_mm: 35\n",
+    "zoom:\n  touchpad:\n    start_mm: 70\n",                    # default pad: room left
 ])
 def test_valid_values_of_every_kind_still_load(cfgdir, text):
     _write(cfgdir, "local.yaml", text)

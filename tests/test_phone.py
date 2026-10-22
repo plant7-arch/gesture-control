@@ -19,6 +19,7 @@ FAKE = r'''#!{python}
 import signal, sys, time
 mode = {mode!r}
 if "--version" in sys.argv:
+    time.sleep({version_delay})
     print("scrcpy {version} <https://github.com/Genymobile/scrcpy>")
     sys.exit(0)
 with open({args_file!r}, "w") as f:
@@ -77,11 +78,11 @@ def quick(monkeypatch):
     monkeypatch.setattr(ph, "FIRST_FRAME_S", 0.0)
 
 
-def _fake(tmp_path, mode="ok", version="3.3.4"):
+def _fake(tmp_path, mode="ok", version="3.3.4", version_delay=0.0):
     exe = tmp_path / "scrcpy"
     args_file = str(tmp_path / "args.txt")
     exe.write_text(FAKE.format(python=sys.executable, mode=mode, version=version,
-                               args_file=args_file))
+                               args_file=args_file, version_delay=version_delay))
     exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
     return str(exe), tmp_path / "args.txt"
 
@@ -420,3 +421,47 @@ def test_phone_and_no_phone_together_are_refused(capsys):
     with pytest.raises(SystemExit):
         parse_args(["--phone", "--no-phone"])
     assert "not allowed with" in capsys.readouterr().err
+
+
+def test_quitting_before_scrcpy_launches_doesnt_wait_for_the_timeout(tmp_path):
+    """v0.18.1 bug: stop() during start()'s checks found no process to stop, so
+    start() launched scrcpy anyway and waited the whole start_timeout_s (the app took
+    22 s to quit after Ctrl+C at 0.3 s). Now start() gives up and never launches."""
+    import threading
+
+    exe, args = _fake(tmp_path, mode="hang", version_delay=1.0)  # slow `scrcpy --version`
+    cam = PhoneCamera(_pc(), exe=exe, node_exists=lambda p: True, probe=lambda p: False)
+    errors = []
+
+    def run():
+        try:
+            cam.start(timeout=20)
+        except PhoneError as exc:
+            errors.append(exc)
+
+    th = threading.Thread(target=run)
+    t0 = time.monotonic()
+    th.start()
+    time.sleep(0.3)
+    cam.stop()                               # like Ctrl+C at 0.3 s
+    th.join(10)
+    assert not th.is_alive() and time.monotonic() - t0 < 3
+    assert errors and "Stopped before the phone camera started" in str(errors[0])
+    assert not args.exists()                 # scrcpy itself was never launched
+    assert not cam.running
+
+
+@pytest.mark.parametrize("value, sent", [(8000000, "8000000"), ("8M", "8M"),
+                                         ("4000K", "4000K")])
+def test_bit_rate_can_be_a_plain_number(tmp_path, value, sent):
+    """v0.18.1: phone.bit_rate: 8000000 was refused as 'must be a word or text'."""
+    import shutil
+
+    import yaml
+
+    from gesture_control.config import DEFAULT_CONFIG_PATH, load_config
+
+    shutil.copy(DEFAULT_CONFIG_PATH, tmp_path / "gestures.yaml")
+    (tmp_path / "local.yaml").write_text(yaml.safe_dump({"phone": {"bit_rate": value}}))
+    pc = load_config(tmp_path / "gestures.yaml")["phone"]
+    assert f"--video-bit-rate={sent}" in scrcpy_command(pc)

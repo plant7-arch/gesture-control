@@ -285,3 +285,26 @@ def test_overlay_shows_the_scroll_axis(monkeypatch):
         o.draw(np.zeros((480, 640, 3), np.uint8), None,
                Status(mode=Mode.SCROLL, scroll_axis=axis), 30.0, 10.0)
     assert {"up/down", "sideways", "any way"} <= set(texts)
+
+
+def test_stalled_preview_with_the_phone_asks_about_the_phone(monkeypatch):
+    """v0.18.1: the stall band said 'Is another app using the camera?' for the phone
+    too. With the phone, it asks whether the phone is still connected."""
+    from gesture_control import app
+
+    o, texts, np = _overlay(monkeypatch)
+    o.stall_hint = app.PHONE_STALL_HINT
+    o.stalled_image(7.0)
+    assert any(t.startswith("Is the phone still connected") for t in texts)
+    assert not any("another app" in t for t in texts)
+
+
+def test_stall_hints_fit_a_640_pixel_window():
+    import cv2
+
+    from gesture_control import app
+    from gesture_control.overlay import FONT
+
+    for hint in (app.PHONE_STALL_HINT, app.CAMERA_STALL_HINT):
+        (w, _), _ = cv2.getTextSize(hint, FONT, 0.45, 1)
+        assert 20 + w <= 640

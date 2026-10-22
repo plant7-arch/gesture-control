@@ -83,7 +83,7 @@ def check_settings(pc: dict[str, Any]) -> None:
         raise ValueError("phone.size must look like 640x480 (one of the sizes "
                          "scrcpy --video-source=camera --list-camera-sizes shows)")
     if not BIT_RATE_RE.match(str(pc["bit_rate"])):
-        raise ValueError("phone.bit_rate must look like 8M or 4000K")
+        raise ValueError("phone.bit_rate must look like 8M, 4000K or 8000000")
     if pc["connect"] and not ADDRESS_RE.match(str(pc["connect"])):
         raise ValueError("phone.connect must be empty or an address like "
                          "192.168.1.42:41234 (from Wireless debugging on the phone)")
@@ -144,6 +144,11 @@ class PhoneCamera:
         self._ready = threading.Event()
         self._reader: threading.Thread | None = None
         self._said_stopped = False
+        # stop() may come from the main thread while start() runs in the startup
+        # thread. The lock makes "launch scrcpy" and "stop" exclusive: either stop()
+        # finds the process and stops it, or start() sees the flag and never launches.
+        self._stopping = threading.Event()
+        self._lock = threading.Lock()
 
     # -- start ---------------------------------------------------------------------
     def _check(self) -> str:
@@ -184,7 +189,12 @@ class PhoneCamera:
         # Was the device already offering a picture before scrcpy? (Only without
         # v4l2loopback's exclusive_caps: then it can't tell us when frames arrive.)
         offered_before = bool(self.probe(node))
-        proc = self.proc = self._launch()
+        with self._lock:
+            if self._stopping.is_set():
+                # The app quit while the checks above ran: don't launch scrcpy only to
+                # wait start_timeout_s for it (that took 22 s in v0.18.0).
+                raise PhoneError("Stopped before the phone camera started")
+            proc = self.proc = self._launch()
         self._reader = threading.Thread(target=self._read, args=(proc,), name="scrcpy",
                                         daemon=True)
         self._reader.start()
@@ -315,8 +325,11 @@ class PhoneCamera:
 
     # -- stop ---------------------------------------------------------------------------
     def stop(self) -> None:
-        """Ask scrcpy to quit (like Ctrl+C), then make sure it has."""
-        proc, self.proc = self.proc, None
+        """Ask scrcpy to quit (like Ctrl+C), then make sure it has. Before start() has
+        launched it, this makes start() give up instead."""
+        with self._lock:
+            self._stopping.set()
+            proc, self.proc = self.proc, None
         if proc is None:
             return
         if proc.poll() is None:

@@ -13,7 +13,7 @@ camera:
   width: 640
   height: 480
   fps: 30               # your built-in webcam maxes out at 30
-  fourcc: MJPG
+  fourcc: MJPG          # 4 characters: MJPG (full frame rate) or YUYV
   mirror: true          # mirror view, so moving right moves the cursor right
   lock_framerate: true  # stop auto-exposure dropping to 15 fps in dim light
   buffers: 2            # camera frame buffers. 1 makes many cameras skip frames
@@ -28,7 +28,7 @@ tracker:
                               #   twice the CPU per frame
   min_detection_confidence: 0.6
   min_presence_confidence: 0.6
-  min_tracking_confidence: 0.5
+  min_tracking_confidence: 0.5   # the three confidences: 0..1
 
 pose:
   # A finger counts as "up" when wrist->tip is this many times wrist->middle-joint,
@@ -162,7 +162,8 @@ zoom:
   touchpad:
     gain: 1.0             # fingers spread = hands spread ^ gain. 1.5 = zoom faster
     start_mm: 45          # finger distance when the pinch starts (fingers sit on a
-                          #   diagonal, so libinput never mistakes the pinch for a scroll)
+                          #   diagonal, so libinput never mistakes the pinch for a scroll).
+                          #   Must leave 10 mm to zoom each way: 26-80 on this size
     width_mm: 100         # size of the virtual touchpad
     height_mm: 65
   invert: false           # true = spread to zoom out (every method)
@@ -203,7 +204,8 @@ phone:
   size: 640x480         # one of: scrcpy --video-source=camera --list-camera-sizes
                         #   (640x480 matches a laptop webcam; bigger doesn't track better)
   fps: 30               # 30 is the most phones offer outside high-speed mode
-  bit_rate: 8M          # video quality over the cable or Wi-Fi; lower it if it stutters
+  bit_rate: 8M          # video quality over the cable or Wi-Fi (8M, 4000K or 8000000);
+                        #   lower it if it stutters
   video_device: 10      # the virtual camera: /dev/video10 (v4l2loopback video_nr)
   connect: ""           # empty: USB. For Wi-Fi: the address from Wireless debugging,
                         #   e.g. 192.168.1.42:41234 (the port changes when it's turned on)

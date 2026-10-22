@@ -33,6 +33,40 @@ _now = time.monotonic  # the clock (tests replace it)
 MIN_CONTACT_S = 0.25  # longer than libinput's tap timeout (~180 ms)
 ANGLE_DEG = 30.0      # finger diagonal: 30 degrees above horizontal
 MIN_DY_MM = 8.0       # libinput's scroll box is < 7 mm vertically
+START_ROOM_MM = 10.0  # zoom.touchpad.start_mm: at least this much room to zoom each way
+EVENT_HISTORY = 1000  # how many sent events .events keeps (tests read them)
+
+
+def record(events: list, event: tuple) -> None:
+    """Add to a device's record of sent events, keeping only the last EVENT_HISTORY
+    (trimmed in batches, so it stays a plain list and costs nothing per event)."""
+    events.append(event)
+    if len(events) > 2 * EVENT_HISTORY:
+        del events[:-EVENT_HISTORY]
+
+
+def safe_area(width_mm: float, height_mm: float) -> tuple[float, float, float, float]:
+    """Where the fingers may go (x0, x1, y0, y1 in mm): 3 mm inside libinput's palm
+    edges (8% of the width each side, 5% of the height at the top) and the thumb
+    line (85% of the height)."""
+    edge_x = min(8.0, width_mm * 0.08) + 3.0
+    return (edge_x, width_mm - edge_x, height_mm * 0.05 + 3.0, height_mm * 0.85 - 3.0)
+
+
+def separation_range(width_mm: float, height_mm: float) -> tuple[float, float]:
+    """The closest and widest the two fingers can be (mm) on a pad this size."""
+    x0, x1, y0, y1 = safe_area(width_mm, height_mm)
+    a = math.radians(ANGLE_DEG)
+    widest = min((x1 - x0) / math.cos(a), (y1 - y0) / math.sin(a))
+    return MIN_DY_MM / math.sin(a), widest
+
+
+def start_range(width_mm: float, height_mm: float) -> tuple[float, float]:
+    """Where a pinch may start (zoom.touchpad.start_mm) so the fingers have at least
+    START_ROOM_MM to move apart (zoom in) and together (zoom out) before a re-grip."""
+    lo, hi = separation_range(width_mm, height_mm)
+    # Rounded to 0.1 mm: 8 / sin(30 deg) is 16.000000000000004, not 16.
+    return round(lo + START_ROOM_MM, 1), round(hi - START_ROOM_MM, 1)
 
 
 class VirtualTouchpad:
@@ -50,7 +84,9 @@ class VirtualTouchpad:
         self._tracking_id = 0
         self._sep = 0.0
         self._lift_at: float | None = None  # scheduled lift time (monotonic)
-        self.events: list[tuple[str, float]] = []  # dry-run record: ("down"/"move"/"up", sep)
+        # The last events sent: ("down"/"move"/"up", sep). Bounded, so a long session
+        # doesn't keep every finger movement in memory.
+        self.events: list[tuple[str, float]] = []
         if dry_run:
             return
         from evdev import AbsInfo
@@ -80,22 +116,16 @@ class VirtualTouchpad:
         time.sleep(settle)  # let udev and the compositor pick up the new device
 
     # -- geometry -------------------------------------------------------------
-    # Safe area: 3 mm inside libinput's palm edges (8% of the width each side, 5% of
-    # the height at the top) and the thumb line (85% of the height).
     def _safe(self) -> tuple[float, float, float, float]:
-        edge_x = min(8.0, self.width_mm * 0.08) + 3.0
-        return (edge_x, self.width_mm - edge_x,
-                self.height_mm * 0.05 + 3.0, self.height_mm * 0.85 - 3.0)
+        return safe_area(self.width_mm, self.height_mm)
 
     @property
     def min_sep(self) -> float:
-        return MIN_DY_MM / math.sin(math.radians(ANGLE_DEG))
+        return separation_range(self.width_mm, self.height_mm)[0]
 
     @property
     def max_sep(self) -> float:
-        x0, x1, y0, y1 = self._safe()
-        a = math.radians(ANGLE_DEG)
-        return min((x1 - x0) / math.cos(a), (y1 - y0) / math.sin(a))
+        return separation_range(self.width_mm, self.height_mm)[1]
 
     def finger_mm(self, sep: float) -> tuple[tuple[float, float], tuple[float, float]]:
         """Finger positions in mm: lower-left ("thumb") and upper-right, around the
@@ -142,7 +172,7 @@ class VirtualTouchpad:
             return self._sep
         sep = min(max(sep, self.min_sep), self.max_sep)
         self._down, self._down_t, self._sep = True, _now(), sep
-        self.events.append(("down", sep))
+        record(self.events, ("down", sep))
         if self.dry_run:
             print(f"[touchpad] 2 fingers down, {sep:.1f} mm apart")
             return sep
@@ -157,7 +187,7 @@ class VirtualTouchpad:
         if abs(sep - self._sep) < 1.0 / self.res:
             return
         self._sep = sep
-        self.events.append(("move", sep))
+        record(self.events, ("move", sep))
         if self.dry_run:
             print(f"[touchpad] fingers {sep:.1f} mm apart")
             return
@@ -193,7 +223,7 @@ class VirtualTouchpad:
     def _lift_now(self) -> None:
         self._lift_at = None
         self._down = False
-        self.events.append(("up", self._sep))
+        record(self.events, ("up", self._sep))
         if self.dry_run:
             print("[touchpad] fingers up")
             return

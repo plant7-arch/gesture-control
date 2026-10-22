@@ -21,6 +21,33 @@ from .pointer import VirtualKeys, VirtualPointer
 
 PHONE_OPEN_TRIES, PHONE_OPEN_RETRY_S = 10, 0.3  # phone camera: keep trying for ~3 s
 PLACEHOLDER_AFTER_S = 0.5  # show the "Starting..." window only if startup is slower
+CAMERA_STALL_HINT = "is another app using it?"
+PHONE_STALL_HINT = ("is the phone still connected (cable or Wi-Fi) and its camera "
+                    "still on?")
+
+
+def stall_message(seconds: float, phone: bool) -> str:
+    """What the terminal says while no frames arrive."""
+    what, hint = (("the phone", PHONE_STALL_HINT) if phone
+                  else ("the camera", CAMERA_STALL_HINT))
+    return f"No frames from {what} for {seconds:.0f} s - {hint}"
+
+
+def _started(future, what: str, verbose: bool = False):
+    """The result of a background start (camera, hand tracker). Whatever went wrong
+    becomes one readable RuntimeError (reported as "Error: ...", cleanup still runs),
+    not a traceback. -v prints the traceback too, for a bug report."""
+    try:
+        return future.result()
+    except (RuntimeError, KeyboardInterrupt):
+        raise  # already a readable message (or a quit)
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            import traceback
+
+            traceback.print_exception(exc)
+        raise RuntimeError(f"{what} couldn't start: {type(exc).__name__}: {exc}") from exc
+
 
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -198,6 +225,9 @@ def scroll_test(scroller, wait=time.sleep, clock=time.monotonic) -> None:
         print("Done. The content should have gone down and back up, then right and back "
               "left. To compare with the mouse wheel, run it again with "
               "--scroll-method wheel (or touchpad).")
+        print("If only sideways failed, in Firefox on a page with its own scroll panel "
+              "(an ongoing chat, a web app): Firefox keeps scrolling the panel for 1.5 s "
+              "after up/down scrolling. README > Scrolling > If scrolling doesn't behave.")
     finally:
         scroller.close()
         scroller.pointer.close()
@@ -409,6 +439,13 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
         from .phone import apply_settings
 
         apply_settings(cfg)  # read the phone's virtual camera, at the size it sends
+        node = int(cfg["phone"]["video_device"])
+        if args.camera is not None and args.camera != node:
+            # scrcpy would send the phone's picture to /dev/video<node> while the app
+            # read another camera: the phone would be started but never used.
+            sys.exit(f"--camera {args.camera} can't be used with the phone camera, which "
+                     f"is /dev/video{node} (phone.video_device). For the laptop camera, "
+                     f"add --no-phone: {command()} --no-phone --camera {args.camera}")
     if args.camera is not None:
         cfg["camera"]["index"] = args.camera
     if args.scroll_method:
@@ -570,8 +607,10 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
                 time.sleep(0.02)
         if preview and overlay is None:
             overlay = Overlay(cfg)
-        camera = camera_f.result()   # re-raises a camera error here
-        tracker = tracker_f.result()
+        if overlay and phone_cam is not None:
+            overlay.stall_hint = PHONE_STALL_HINT
+        camera = _started(camera_f, "The camera", args.verbose)  # re-raises its error
+        tracker = _started(tracker_f, "The hand tracker", args.verbose)
         from .tracker import feature_points
 
         w, h, fps_set = camera.actual
@@ -624,8 +663,7 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
                     stall_since = now - 1.0  # the read above already waited 1 s
                     stall_said = stall_since
                 if now - stall_said > 5:
-                    print(f"No frames from the camera for {now - stall_since:.0f} s - "
-                          "is another app using it?")
+                    print(stall_message(now - stall_since, phone_cam is not None))
                     stall_said = now
                 if overlay:
                     # Say so in the window (it would otherwise just freeze) and keep it
@@ -658,7 +696,11 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
                 both_point = feats.pose == POINT and other_feats.pose == POINT
                 zoom_in = (both_point, hand_spread(hand.image, other.image, fw, fh))
             now = time.monotonic()
-            status = controller.update(feats, anchor, now, palm, zoom_in, rebase=switched)
+            # The time the frame was captured, not now: hand tracking takes a varying
+            # time (7.7-62.7 ms between "now"s for frames 31-37 ms apart, measured),
+            # and that noise would go straight into the hand-speed estimates.
+            status = controller.update(feats, anchor, cap_ts, palm, zoom_in,
+                                       rebase=switched)
             latency_ms = (time.monotonic() - cap_ts) * 1000
 
             n_fps += 1
