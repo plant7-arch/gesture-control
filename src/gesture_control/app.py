@@ -19,6 +19,7 @@ from .config import (
 )
 from .pointer import VirtualKeys, VirtualPointer
 
+PHONE_OPEN_TRIES, PHONE_OPEN_RETRY_S = 10, 0.3  # phone camera: keep trying for ~3 s
 PLACEHOLDER_AFTER_S = 0.5  # show the "Starting..." window only if startup is slower
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -28,6 +29,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument("--config", help=f"YAML config (default: {DEFAULT_CONFIG_PATH})")
     p.add_argument("--camera", type=int, help="camera index, e.g. 0 for /dev/video0")
+    phone = p.add_mutually_exclusive_group()
+    phone.add_argument("--phone", action="store_true",
+                       help="use an Android phone as the camera: starts scrcpy and stops it "
+                            "at exit (sets phone.enabled; README > Phone as the camera)")
+    phone.add_argument("--no-phone", action="store_true",
+                       help="use the laptop camera even if phone.enabled is set")
     p.add_argument("--mode", choices=["absolute", "relative"],
                    help="override cursor.mode (relative: touchpad-like, absolute: hand = screen)")
     p.add_argument("--no-preview", action="store_true", help="run without the preview window")
@@ -394,6 +401,14 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
         sys.exit(f"Config error: {exc}")
     for warning in cfg["_warnings"]:
         print(f"Config warning: {warning}")
+    if args.phone:
+        cfg["phone"]["enabled"] = True
+    if args.no_phone:
+        cfg["phone"]["enabled"] = False
+    if cfg["phone"]["enabled"]:
+        from .phone import apply_settings
+
+        apply_settings(cfg)  # read the phone's virtual camera, at the size it sends
     if args.camera is not None:
         cfg["camera"]["index"] = args.camera
     if args.scroll_method:
@@ -466,16 +481,29 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
                 timings[name] = time.monotonic() - t
         return run
 
+    phone_cam = None
+    if cfg["phone"]["enabled"]:
+        from .phone import PhoneCamera
+
+        phone_cam = PhoneCamera(cfg["phone"], verbose=args.verbose)
+
     def start_camera():
         from .capture import Camera
 
-        cam = Camera(cfg["camera"])
-        try:
-            cam.start()
-        except Exception:
-            cam.stop()
-            raise
-        return cam
+        tries = 1
+        if phone_cam is not None:
+            phone_cam.start()  # scrcpy: the phone's picture into the virtual camera
+            tries = PHONE_OPEN_TRIES  # in case the first frames are slow to settle
+        for attempt in range(1, tries + 1):
+            cam = Camera(cfg["camera"])
+            try:
+                cam.start()
+                return cam
+            except Exception:
+                cam.stop()
+                if attempt == tries or (phone_cam is not None and not phone_cam.running):
+                    raise
+                time.sleep(PHONE_OPEN_RETRY_S)
 
     def load_tracker():
         from .tracker import HandTracker
@@ -590,6 +618,8 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
                     for ev in status.events:
                         print(f"{time.strftime('%H:%M:%S')} {ev}")
                 now = time.monotonic()
+                if phone_cam is not None and (msg := phone_cam.stopped_message()):
+                    print(msg, file=sys.stderr)
                 if stall_since is None:
                     stall_since = now - 1.0  # the read above already waited 1 s
                     stall_said = stall_since
@@ -675,6 +705,8 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
         if overlay:
             overlay.close()
         # Quitting during startup: let the background start finish, then undo it.
+        if phone_cam is not None and camera_f is not None and not camera_f.done():
+            phone_cam.stop()  # don't wait for the phone: its start fails right away
         for fut, close in ((camera_f, "stop"), (tracker_f, "close")):
             if fut is None:  # stopped before it was started
                 continue
@@ -685,6 +717,8 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
             if obj is not None:
                 getattr(obj, close)()
         pool.shutdown()
+        if phone_cam is not None:
+            phone_cam.stop()  # after the camera: it reads scrcpy's virtual camera
         print("Stopped.")
 
 

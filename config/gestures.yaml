@@ -194,6 +194,23 @@ pause:
 safety:
   lost_hand_release_frames: 8   # release any held button after the hand is gone this long
 
+phone:
+  # An Android phone as the camera, through scrcpy (README > Phone as the camera).
+  # With enabled: true (or --phone), the app starts scrcpy itself, uses the phone's
+  # picture, and stops scrcpy when it quits.
+  enabled: false
+  facing: back          # back (the better camera) | front | external
+  size: 640x480         # one of: scrcpy --video-source=camera --list-camera-sizes
+                        #   (640x480 matches a laptop webcam; bigger doesn't track better)
+  fps: 30               # 30 is the most phones offer outside high-speed mode
+  bit_rate: 8M          # video quality over the cable or Wi-Fi; lower it if it stutters
+  video_device: 10      # the virtual camera: /dev/video10 (v4l2loopback video_nr)
+  connect: ""           # empty: USB. For Wi-Fi: the address from Wireless debugging,
+                        #   e.g. 192.168.1.42:41234 (the port changes when it's turned on)
+  serial: ""            # only with several phones or connections: which one (adb devices)
+  start_timeout_s: 20   # give up if the picture hasn't started by then
+  extra_args: []        # more scrcpy options, e.g. [--camera-ar=4:3]
+
 preview:
   enabled: true
   window_name: gesture-control

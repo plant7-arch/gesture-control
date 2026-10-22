@@ -182,6 +182,18 @@ DEFAULTS: dict[str, Any] = {
     "safety": {
         "lost_hand_release_frames": 8,
     },
+    "phone": {
+        "enabled": False,
+        "facing": "back",
+        "size": "640x480",
+        "fps": 30,
+        "bit_rate": "8M",
+        "video_device": 10,
+        "connect": "",
+        "serial": "",
+        "start_timeout_s": 20,
+        "extra_args": [],
+    },
     "preview": {
         "enabled": True,
         "window_name": "gesture-control",
@@ -321,6 +333,9 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     cfg["_config_dir"] = str(cfg_path.parent)
     cfg["_warnings"] = warnings
 
+    for key in ("connect", "serial"):  # `connect:` with nothing after it = empty
+        if cfg["phone"][key] is None:
+            cfg["phone"][key] = ""
     _check_types(cfg)
     model = Path(cfg["tracker"]["model"]).expanduser()
     if not model.is_absolute():
@@ -430,13 +445,17 @@ def _check_ranges(cfg: dict[str, Any]) -> None:
     # Counts and sizes: whole numbers, at least this much.
     for p, low in (("camera.index", 0), ("camera.width", 1), ("camera.height", 1),
                    ("camera.buffers", 2),
+                   ("phone.fps", 1), ("phone.video_device", 0),
                    ("tracker.num_hands", 1), ("tracker.second_hand_check_every", 0),
                    ("pose.debounce_frames", 1), ("pinch.confirm_frames", 1),
                    ("safety.lost_hand_release_frames", 1)):
         v = num(p)
         if v != int(v) or v < low:
             raise ValueError(f"{p} must be a whole number of at least {low} (got {v:g})")
-    positive("camera.fps", "cursor.relative.mouse_px_per_screen")
+    positive("camera.fps", "cursor.relative.mouse_px_per_screen", "phone.start_timeout_s")
+    from .phone import check_settings  # here: phone.py imports this module
+
+    check_settings(cfg["phone"])
     if cfg["double_click"]["os_time_ms"] != "auto":
         positive("double_click.os_time_ms")
     # One Euro filters: a cutoff of 0 divides by zero; a negative beta inverts them.

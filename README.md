@@ -126,6 +126,107 @@ towards each edge; press Enter the moment it touches. The result is saved to
 monitors, and delete that file to undo it. `--pointer-test` then visits all four screen
 corners so you can check the result.
 
+### Phone as the camera (optional)
+
+An Android phone (Android 12 or newer) can be the camera instead of the laptop's
+webcam: usually a sharper picture, and you can put it wherever suits your hands.
+[scrcpy](https://github.com/Genymobile/scrcpy) sends the phone's camera to a virtual
+camera on the laptop (`/dev/video10`), and gesture-control starts and stops scrcpy by
+itself, so one command in one terminal is all it takes:
+
+```bash
+uv run gesture-control --phone
+```
+
+#### One-time setup
+
+1. **Install scrcpy, adb and the virtual-camera module:**
+   ```bash
+   sudo apt install scrcpy adb v4l2loopback-dkms
+   scrcpy --version       # needs 3.0 or newer
+   ```
+   If Secure Boot is on, the install asks you to choose a password. On the next reboot a
+   blue *MOK management* screen appears: choose **Enroll MOK**, then enter that password.
+   Without this the module isn't allowed to load.
+2. **Create the virtual camera, now and at every boot:**
+   ```bash
+   sudo modprobe v4l2loopback video_nr=10 card_label="Phone camera" exclusive_caps=1
+   echo v4l2loopback | sudo tee /etc/modules-load.d/v4l2loopback.conf
+   echo 'options v4l2loopback video_nr=10 card_label="Phone camera" exclusive_caps=1' \
+     | sudo tee /etc/modprobe.d/v4l2loopback.conf
+   ls /dev/video10        # must exist
+   ```
+3. **Turn on developer options on the phone:** Settings > About phone > tap **Build
+   number** 7 times.
+4. **Connect the phone, by cable or Wi-Fi.**
+   - **USB cable (recommended):** less lag, steadier, more bandwidth, and the phone
+     charges. In Settings > System > Developer options, turn on **USB debugging**, plug
+     the phone in, and accept *Allow USB debugging?* on the phone. `adb devices` must
+     list it as `device`.
+   - **Wi-Fi (no cable ever needed):** phone and laptop on the same Wi-Fi. In Developer
+     options, turn on **Wireless debugging** and open it, tap **Pair device with
+     pairing code**, then on the laptop:
+     ```bash
+     adb pair 192.168.1.42:37123     # the address and port shown in the pairing popup
+     ```
+     and enter the 6-digit code. Pairing is once per laptop. Then put the address from
+     the main Wireless debugging screen (a different port) in `local.yaml` (below).
+5. **Choose the camera and size.** List what the phone offers:
+   ```bash
+   scrcpy --video-source=camera --list-camera-sizes
+   ```
+   `back` is the main rear camera (sharper, better in indoor light); `front` the selfie
+   camera (you can see the phone's screen). Pick a listed size: `640x480` frames like a
+   laptop webcam and is the lightest; bigger sizes don't track better. Stay at 30 fps:
+   the *high speed* modes (120 / 240 fps) lose most of their frames on the way to the
+   laptop (measured: 17 fps arrived).
+6. **Check the picture** before starting the app:
+   ```bash
+   scrcpy --video-source=camera --camera-facing=back --camera-size=640x480 \
+          --no-audio --v4l2-sink=/dev/video10 --no-window &
+   ffplay /dev/video10    # the phone's picture; close it, then: kill %1
+   ```
+
+#### Settings
+
+Put them in `config/local.yaml` (every `phone` setting is listed under [All
+settings](#all-settings)):
+
+```yaml
+phone:
+  enabled: true          # use the phone every time (or start with --phone)
+  facing: back
+  size: 640x480
+  # connect: 192.168.1.42:41234   # Wi-Fi only: from the Wireless debugging screen
+```
+
+`--phone` uses the phone for one run; `--no-phone` uses the laptop camera even with
+`enabled: true`. The app reads `/dev/video10` at the phone's size by itself: no
+`camera:` settings needed.
+
+#### Each time
+
+1. Plug the phone in (or, for Wi-Fi, turn on Wireless debugging; if its port changed,
+   update `phone.connect`).
+2. `uv run gesture-control --phone`. The startup line says `Camera /dev/video10`.
+3. Quit as usual (`q`, Esc or Ctrl+C): scrcpy stops too.
+
+With `-v`, scrcpy's own messages are shown, starting with the exact scrcpy command.
+
+#### Troubleshooting
+
+| Message or problem | Fix |
+|---|---|
+| `/dev/video10 doesn't exist` | Step 2 (after a reboot without step 2's last two commands, run the `modprobe` line again) |
+| `needs scrcpy` / `scrcpy ... is too old` | Step 1; if apt's scrcpy is older than 3.0, install the release from GitHub |
+| Window stays on *Starting camera and hand tracker...* | The app waits until the phone's frames reach `/dev/video10` (the first can take a few seconds), up to `phone.start_timeout_s`. Run with `-v` to see where scrcpy is. If it ends with `didn't start within`, check the picture by hand (step 6) |
+| `scrcpy stopped before the camera started` | The message shows scrcpy's last words and a likely fix: phone not connected, debugging prompt not accepted, a size the camera doesn't offer, or a changed Wi-Fi port |
+| Several devices listed by `adb devices` | Set `phone.serial` to the one to use, or `adb disconnect` the Wi-Fi connection |
+| `The phone camera stopped (scrcpy quit)` while running | The cable came out or the phone stopped the camera. Held buttons are released; reconnect and restart the app |
+| Lower fps than expected in the preview | Use USB instead of Wi-Fi, lower `phone.bit_rate` (e.g. `4M`), or keep `size: 640x480` |
+| Sideways or upside-down picture | Turn the phone (landscape for the back camera usually works); the app doesn't rotate the image yet |
+| Hand moves right, cursor moves left | Keep `camera.mirror: true` (both phone cameras need it) |
+
 ### Using your mouse and gestures together (optional, one-time setup)
 
 By default, gestures drive a virtual tablet that puts the cursor at positions the app
@@ -184,6 +285,7 @@ Useful options:
 | `--no-preview` | Run without the camera window (Ctrl+C, or `kill`, to quit) |
 | `-v` | Print every action to the terminal, and how long startup took |
 | `--camera N` | Use `/dev/videoN` |
+| `--phone` / `--no-phone` | Use an Android phone as the camera (starts and stops scrcpy), or not, whatever `phone.enabled` says. See [Phone as the camera](#phone-as-the-camera-optional) |
 | `--config PATH` | Use another config file |
 | `--version` | Print the version (from `pyproject.toml`) |
 
@@ -670,6 +772,21 @@ Absolute mode only:
 | `max_move` | `0.02` | The cursor may drift at most this far between pinches (fraction of screen width, 0.02 = about 38 px) |
 | `os_time_ms` | `auto` | The system double-click time. `auto` reads GNOME's setting (400 ms by default); or set a number |
 
+#### `phone` (Android phone as the camera)
+
+| Setting | Default | What it does |
+|---|---|---|
+| `phone.enabled` | `false` | Use the phone as the camera: the app starts scrcpy and stops it at exit (`--phone` / `--no-phone` override it) |
+| `phone.facing` | `back` | Which camera: `back`, `front` or `external` |
+| `phone.size` | `640x480` | Picture size; one of the sizes `scrcpy --video-source=camera --list-camera-sizes` lists. The app reads the virtual camera at this size |
+| `phone.fps` | `30` | Frame rate asked of the phone |
+| `phone.bit_rate` | `8M` | Video bit rate from the phone; lower it (e.g. `4M`) if the picture stutters over Wi-Fi |
+| `phone.video_device` | `10` | The virtual camera's number: `/dev/video10` (v4l2loopback `video_nr`) |
+| `phone.connect` | `""` | Empty: USB. Wi-Fi: the address and port from the phone's Wireless debugging screen |
+| `phone.serial` | `""` | Only with several phones or connections: which one, as `adb devices` lists it |
+| `phone.start_timeout_s` | `20` | Give up if the phone's picture hasn't started by then |
+| `phone.extra_args` | `[]` | More scrcpy options, as a list, e.g. `[--camera-ar=4:3]` |
+
 #### `pause`, `safety`, `preview`
 
 | Setting | Default | What it does |
@@ -762,6 +879,7 @@ src/gesture_control/
   display.py      screen size and scale from GNOME (D-Bus)
   touchpad.py     virtual touchpad for the two-hand pinch
   capture.py      threaded camera reader (newest frame only)
+  phone.py        Android phone as the camera: runs scrcpy (--phone)
   tracker.py      MediaPipe Hand Landmarker wrapper
   model.py        hand model download and SHA-256 check
   features.py     finger states, pinch distances, pose classification

@@ -1,0 +1,422 @@
+"""The phone camera (phone.enabled / --phone): the scrcpy command, starting and stopping
+scrcpy, and its errors. A fake scrcpy (a small script) stands in for the real one, so
+no phone, adb or v4l2loopback is needed."""
+
+from __future__ import annotations
+
+import os
+import stat
+import sys
+import time
+
+import pytest
+from conftest import make_config
+
+from gesture_control import phone as ph
+from gesture_control.phone import PhoneCamera, PhoneError, apply_settings, scrcpy_command
+
+FAKE = r'''#!{python}
+import signal, sys, time
+mode = {mode!r}
+if "--version" in sys.argv:
+    print("scrcpy {version} <https://github.com/Genymobile/scrcpy>")
+    sys.exit(0)
+with open({args_file!r}, "w") as f:
+    f.write("\n".join(sys.argv[1:]))
+print("INFO: ADB device found:", flush=True)
+if mode == "no-device":
+    print("ERROR: Could not find any ADB device", flush=True)
+    sys.exit(1)
+if mode == "bad-size":
+    print("ERROR: Could not find camera size 999x999 (--camera-size)", flush=True)
+    sys.exit(1)
+def bye(*_):
+    print("WARN: Killing the server...", flush=True)
+    with open({args_file!r} + ".stopped", "w") as f:
+        f.write("SIGINT")
+    sys.exit(0)
+signal.signal(signal.SIGINT, bye)
+if mode == "ok":
+    print("[server] INFO: Using camera '0'", flush=True)
+    print("INFO: v4l2 sink started to device: /dev/video10", flush=True)
+    for _ in range(3):
+        print("ERROR: [FFmpeg] Application provided invalid, non monotonically "
+              "increasing dts to muxer in stream 0: 1 >= 1", flush=True)
+if mode == "quits-later":
+    print("INFO: v4l2 sink started to device: /dev/video10", flush=True)
+    time.sleep(0.3)
+    print("ERROR: Device disconnected", flush=True)
+    sys.exit(1)
+if mode == "stdio":
+    # Like a C program: messages are line-buffered in a terminal, held back otherwise
+    # (whatever PYTHONUNBUFFERED says).
+    import io, os
+    sys.stdout = io.TextIOWrapper(open(1, "wb", buffering=1 << 16, closefd=False),
+                                  line_buffering=os.isatty(1))
+    print("INFO: ADB device found:")
+    print("INFO: v4l2 sink started to device: /dev/video10")
+if mode == "holds-back":
+    # Like the real scrcpy without a terminal, whatever it's connected to: nothing
+    # comes out until it exits.
+    held = ["scrcpy 3.3.4", "INFO: v4l2 sink started to device: /dev/video10"]
+    def release(*_):
+        import os
+        os.write(1, ("\n".join(held) + "\n").encode())
+        sys.exit(0)
+    signal.signal(signal.SIGINT, release)
+if mode == "ignores-sigint":
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    print("INFO: v4l2 sink started to device: /dev/video10", flush=True)
+while True:
+    time.sleep(0.05)
+'''
+
+
+@pytest.fixture(autouse=True)
+def quick(monkeypatch):
+    monkeypatch.setattr(ph, "FIRST_FRAME_S", 0.0)
+
+
+def _fake(tmp_path, mode="ok", version="3.3.4"):
+    exe = tmp_path / "scrcpy"
+    args_file = str(tmp_path / "args.txt")
+    exe.write_text(FAKE.format(python=sys.executable, mode=mode, version=version,
+                               args_file=args_file))
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    return str(exe), tmp_path / "args.txt"
+
+
+def _pc(**kw):
+    return make_config(phone={"enabled": True, **kw})["phone"]
+
+
+def _camera(tmp_path, mode="ok", version="3.3.4", verbose=False, probe=None, **kw):
+    exe, args = _fake(tmp_path, mode, version)
+    cam = PhoneCamera(_pc(**kw), verbose=verbose, exe=exe, node_exists=lambda p: True,
+                      probe=probe or (lambda p: True))
+    return cam, args
+
+
+# -- the command --------------------------------------------------------------------------
+
+def test_scrcpy_command_from_the_settings():
+    cmd = scrcpy_command(_pc())
+    assert cmd == ["scrcpy", "--video-source=camera", "--camera-facing=back",
+                   "--camera-size=640x480", "--camera-fps=30", "--video-bit-rate=8M",
+                   "--no-audio", "--v4l2-sink=/dev/video10", "--no-window"]
+
+
+def test_wifi_address_serial_and_extra_options():
+    cmd = scrcpy_command(_pc(connect="192.168.1.42:41234", facing="front",
+                             video_device=12, extra_args=["--camera-ar=4:3"]))
+    assert cmd[1] == "--tcpip=192.168.1.42:41234"
+    assert "--camera-facing=front" in cmd and "--v4l2-sink=/dev/video12" in cmd
+    assert cmd[-1] == "--camera-ar=4:3"
+    assert scrcpy_command(_pc(serial="10BE4D1NXT000AZ"))[1] == "--serial=10BE4D1NXT000AZ"
+
+
+@pytest.mark.parametrize("text, version", [
+    ("scrcpy 3.3.4 <https://github.com/Genymobile/scrcpy>\n", (3, 3, 4)),
+    ("scrcpy 2.4\n", (2, 4)),
+    ("something else\n", None),
+])
+def test_version_is_read(text, version):
+    assert ph.parse_version(text) == version
+
+
+def test_the_app_reads_the_virtual_camera_at_the_phones_size():
+    cfg = make_config(phone={"enabled": True, "size": "1280x720", "video_device": 11})
+    apply_settings(cfg)
+    cam = cfg["camera"]
+    assert (cam["index"], cam["width"], cam["height"], cam["fps"]) == (11, 1280, 720, 30)
+    assert cam["lock_framerate"] is False
+
+
+# -- starting and stopping ------------------------------------------------------------
+
+def test_start_waits_for_the_picture_and_stop_sends_ctrl_c(tmp_path):
+    cam, args = _camera(tmp_path)
+    cam.start(timeout=5)
+    assert cam.running
+    assert "--v4l2-sink=/dev/video10" in args.read_text().splitlines()
+    cam.stop()
+    assert not cam.running
+    assert (tmp_path / "args.txt.stopped").read_text() == "SIGINT"  # a clean quit
+    assert cam.stopped_message() == ""                               # we stopped it
+
+
+def test_scrcpy_runs_in_its_own_process_group(tmp_path):
+    """So Ctrl+C in the terminal reaches only the app, which stops scrcpy last."""
+    cam, _ = _camera(tmp_path)
+    cam.start(timeout=5)
+    try:
+        assert os.getpgid(cam.proc.pid) != os.getpgid(0)
+    finally:
+        cam.stop()
+
+
+def test_scrcpy_that_ignores_ctrl_c_is_killed(tmp_path, monkeypatch):
+    cam, _ = _camera(tmp_path, mode="ignores-sigint")
+    cam.start(timeout=5)
+    proc = cam.proc
+    t = time.monotonic()
+    cam.stop()
+    assert proc.poll() is not None and time.monotonic() - t < 6
+
+
+def test_verbose_shows_scrcpy_output_without_the_repeated_ffmpeg_lines(tmp_path, capsys):
+    cam, _ = _camera(tmp_path, verbose=True)
+    cam.start(timeout=5)
+    time.sleep(0.2)
+    cam.stop()
+    out = capsys.readouterr().out
+    assert out.startswith("Phone camera: ") and "--video-source=camera" in out
+    assert "[scrcpy] INFO: v4l2 sink started" in out
+    assert "non monotonically" not in out
+
+
+# -- waiting for the first frames --------------------------------------------------------
+
+def test_start_waits_until_frames_reach_the_virtual_camera(tmp_path):
+    """scrcpy says "v4l2 sink started" before the first frame; opening the virtual
+    camera before that fails ("can't open camera by index"), so start() waits until
+    the camera presents itself as one."""
+    checks = []
+
+    def probe(path):
+        checks.append(time.monotonic())
+        return len(checks) >= 6            # frames arrive after a few checks
+
+    cam, _ = _camera(tmp_path, probe=probe)
+    cam.start(timeout=5)
+    try:
+        assert len(checks) == 6 and cam.running
+    finally:
+        cam.stop()
+
+
+def test_frames_that_never_arrive_time_out(tmp_path):
+    cam, _ = _camera(tmp_path, probe=lambda p: False)
+    with pytest.raises(PhoneError, match="didn't start within 1 s"):
+        cam.start(timeout=1)
+    assert not cam.running
+
+
+def test_scrcpy_quitting_while_waiting_for_frames_says_why(tmp_path):
+    cam, _ = _camera(tmp_path, mode="quits-later", probe=lambda p: False)
+    with pytest.raises(PhoneError, match="(?s)stopped before the camera started.*"
+                                         "Device disconnected"):
+        cam.start(timeout=5)
+
+
+def test_when_the_camera_cant_be_checked_it_waits_a_fixed_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(ph, "NO_PROBE_WAIT_S", 0.4)
+    cam, _ = _camera(tmp_path, probe=lambda p: None)
+    t = time.monotonic()
+    cam.start(timeout=5)
+    try:
+        assert 0.35 <= time.monotonic() - t < 3
+    finally:
+        cam.stop()
+
+
+def test_messages_held_back_until_exit_dont_stop_the_start(tmp_path):
+    """The bug: without a terminal, the real scrcpy holds "v4l2 sink started" back
+    until it exits, so waiting for it timed out while the phone was streaming. Frames
+    arriving in the virtual camera are what count."""
+    calls = []
+
+    def probe(path):
+        calls.append(1)
+        return len(calls) > 4                  # frames arrive after a moment
+
+    cam, _ = _camera(tmp_path, mode="holds-back", probe=probe)
+    t = time.monotonic()
+    cam.start(timeout=5)
+    try:
+        assert time.monotonic() - t < 2 and cam.running
+    finally:
+        cam.stop()
+
+
+def test_messages_come_through_live(tmp_path, capsys):
+    """scrcpy runs in a pseudo-terminal, so its messages (line-buffered there, held
+    back in a pipe) show live with -v, and the device can't be checked here: the
+    start relies on the message."""
+    cam, _ = _camera(tmp_path, mode="stdio", verbose=True, probe=lambda p: None)
+    t = time.monotonic()
+    cam.start(timeout=5)
+    try:
+        assert time.monotonic() - t < 4        # NO_PROBE_WAIT_S after the message
+        assert "[scrcpy] INFO: v4l2 sink started" in capsys.readouterr().out
+    finally:
+        cam.stop()
+
+
+def test_device_already_offering_a_picture_waits_for_scrcpy(tmp_path):
+    """Without exclusive_caps the device offers capture before any frame: then the
+    start waits for scrcpy's message instead of opening an empty camera."""
+    cam, _ = _camera(tmp_path, mode="hang", probe=lambda p: True)
+    with pytest.raises(PhoneError, match="didn't start within 1 s"):
+        cam.start(timeout=1)
+
+
+@pytest.mark.parametrize("caps, device_caps, ready", [
+    (0x84200001, 0x04200001, True),     # capture (device caps in use): frames flowing
+    (0x84200002, 0x04200002, False),    # output only: scrcpy hasn't written a frame
+    (0x00000001, 0x00000000, True),     # old driver without device caps
+    (0x00000002, 0x00000000, False),
+])
+def test_capture_ready_reads_the_cameras_flags(monkeypatch, caps, device_caps, ready):
+    import struct
+
+    def fake_ioctl(fd, request, buf):
+        assert request == ph.VIDIOC_QUERYCAP and len(buf) == 104
+        struct.pack_into("<II", buf, 84, caps, device_caps)
+
+    monkeypatch.setattr(ph.os, "open", lambda *a: 99)
+    monkeypatch.setattr(ph.os, "close", lambda fd: None)
+    monkeypatch.setattr(ph.fcntl, "ioctl", fake_ioctl)
+    assert ph.capture_ready("/dev/video10") is ready
+
+
+def test_capture_ready_is_unknown_without_the_device():
+    assert ph.capture_ready("/dev/does-not-exist") is None
+
+
+# -- failures --------------------------------------------------------------------------
+
+def test_no_phone_connected_says_so(tmp_path):
+    cam, _ = _camera(tmp_path, mode="no-device")
+    with pytest.raises(PhoneError) as err:
+        cam.start(timeout=5)
+    msg = str(err.value)
+    assert "scrcpy stopped before the camera started" in msg
+    assert "Could not find any ADB device" in msg and "USB debugging" in msg
+
+
+def test_a_size_the_camera_doesnt_offer_points_to_the_list(tmp_path):
+    cam, _ = _camera(tmp_path, mode="bad-size", size="999x999")
+    with pytest.raises(PhoneError, match="--list-camera-sizes"):
+        cam.start(timeout=5)
+
+
+def test_picture_that_never_starts_times_out_and_stops_scrcpy(tmp_path):
+    cam, _ = _camera(tmp_path, mode="hang")
+    t = time.monotonic()
+    with pytest.raises(PhoneError, match="didn't start within 1 s"):
+        cam.start(timeout=1)
+    assert time.monotonic() - t < 5 and not cam.running
+
+
+def test_scrcpy_quitting_while_running_is_reported_once(tmp_path):
+    cam, _ = _camera(tmp_path, mode="quits-later")
+    cam.start(timeout=5)
+    time.sleep(1.0)                        # it quits 0.3 s after the picture started
+    msg = cam.stopped_message()
+    assert "The phone camera stopped" in msg and "Device disconnected" in msg
+    assert cam.stopped_message() == ""
+
+
+def test_missing_scrcpy(monkeypatch):
+    monkeypatch.setattr(ph.shutil, "which", lambda _: None)
+    cam = PhoneCamera(_pc(), node_exists=lambda p: True)
+    with pytest.raises(PhoneError, match="(?s)needs scrcpy.*sudo apt install scrcpy"):
+        cam.start()
+
+
+def test_missing_virtual_camera(tmp_path):
+    exe, _ = _fake(tmp_path)
+    cam = PhoneCamera(_pc(video_device=12), exe=exe, node_exists=lambda p: False)
+    with pytest.raises(PhoneError, match="(?s)/dev/video12 doesn't exist.*video_nr=12"):
+        cam.start()
+
+
+def test_old_scrcpy(tmp_path):
+    cam, _ = _camera(tmp_path, version="2.4")
+    with pytest.raises(PhoneError, match="scrcpy 2.4 is too old"):
+        cam.start()
+
+
+def test_stopping_during_start_ends_the_wait_at_once(tmp_path):
+    """Quitting the app while the phone starts must not wait for the timeout."""
+    import threading
+
+    cam, _ = _camera(tmp_path, mode="hang")
+    errors = []
+
+    def run():
+        try:
+            cam.start(timeout=30)
+        except PhoneError as exc:
+            errors.append(exc)
+
+    th = threading.Thread(target=run)
+    th.start()
+    time.sleep(0.5)
+    t = time.monotonic()
+    cam.stop()
+    th.join(5)
+    assert not th.is_alive() and errors and time.monotonic() - t < 5
+
+
+# -- settings ------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("text, message", [
+    ("phone:\n  facing: side\n", "phone.facing"),
+    ("phone:\n  size: big\n", "phone.size"),
+    ("phone:\n  bit_rate: fast\n", "phone.bit_rate"),
+    ("phone:\n  connect: 192.168.1.42\n", "phone.connect"),
+    ("phone:\n  extra_args: --camera-ar=4:3\n", "phone.extra_args"),
+    ("phone:\n  fps: 0\n", "phone.fps"),
+    ("phone:\n  video_device: -1\n", "phone.video_device"),
+])
+def test_bad_phone_settings_are_refused(tmp_path, text, message):
+    import shutil
+
+    from gesture_control.config import DEFAULT_CONFIG_PATH, load_config
+
+    shutil.copy(DEFAULT_CONFIG_PATH, tmp_path / "gestures.yaml")
+    (tmp_path / "local.yaml").write_text(text)
+    with pytest.raises(ValueError, match=message):
+        load_config(tmp_path / "gestures.yaml")
+
+
+def test_empty_connect_line_means_usb(tmp_path):
+    import shutil
+
+    from gesture_control.config import DEFAULT_CONFIG_PATH, load_config
+
+    shutil.copy(DEFAULT_CONFIG_PATH, tmp_path / "gestures.yaml")
+    (tmp_path / "local.yaml").write_text("phone:\n  enabled: true\n  connect:\n")
+    assert load_config(tmp_path / "gestures.yaml")["phone"]["connect"] == ""
+
+
+# -- the app ------------------------------------------------------------------------------
+
+def test_phone_flags_switch_the_camera(monkeypatch):
+    """--phone points the app at the virtual camera; --no-phone wins over the config."""
+    from gesture_control import app
+
+    seen = {}
+
+    def stop_after_config(cfg, *a, **k):
+        seen["camera"] = dict(cfg["camera"])
+        seen["phone"] = cfg["phone"]["enabled"]
+        raise SystemExit(0)
+
+    monkeypatch.setattr(app, "_resolve_output", stop_after_config)
+    with pytest.raises(SystemExit):
+        app.main(["--pointer-test", "--dry-run", "--phone"])
+    assert seen["phone"] and seen["camera"]["index"] == 10
+    with pytest.raises(SystemExit):
+        app.main(["--pointer-test", "--dry-run", "--no-phone"])
+    assert not seen["phone"] and seen["camera"]["index"] == 0
+
+
+def test_phone_and_no_phone_together_are_refused(capsys):
+    from gesture_control.app import parse_args
+
+    with pytest.raises(SystemExit):
+        parse_args(["--phone", "--no-phone"])
+    assert "not allowed with" in capsys.readouterr().err
