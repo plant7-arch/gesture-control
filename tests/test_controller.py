@@ -1199,3 +1199,27 @@ def test_capture_times_give_steadier_cursor_steps_than_after_tracking_times():
     steady, jittery = steps(cap), steps(after)
     assert statistics.mean(steady) == pytest.approx(statistics.mean(jittery), rel=0.05)
     assert statistics.stdev(jittery) > 2 * statistics.stdev(steady)
+
+
+@pytest.mark.parametrize("held_button", [True, False])
+def test_a_pinch_held_through_a_phone_disconnect_doesnt_click_on_return(held_button):
+    """v0.19.0: after the phone camera comes back, the hand is treated as new. A pinch
+    still closed when frames return must be seen open again before it clicks."""
+    r = Rig()
+    r.point(10)
+    if held_button:
+        r.left_pinch()                       # a drag in progress
+        assert r.ptr.is_down("left")
+    else:
+        r.hold(2, pose=POINT, pinch_index=1.0)
+        r.hold(2, pose=POINT, pinch_index=0.35)   # armed, closing, not yet clicked
+    for i in range(6):                       # several seconds without frames
+        r.ctl.stalled(r.t + 1.0 + i)
+    assert not r.ptr.is_down("left")         # released when the frames stopped
+    presses = len([e for e in r.ptr.of("btn") if e[2] == 1])
+    r.t += 7.0
+    r.hold(20, pose=POINT, pinch_index=0.1)  # back, fingers still pinched
+    assert len([e for e in r.ptr.of("btn") if e[2] == 1]) == presses   # no new click
+    r.left_open()
+    r.hold(4, pose=POINT, pinch_index=0.1)   # opened, then a real pinch: clicks
+    assert len([e for e in r.ptr.of("btn") if e[2] == 1]) == presses + 1

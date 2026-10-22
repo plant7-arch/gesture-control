@@ -209,7 +209,17 @@ phone:
 1. Plug the phone in (or, for Wi-Fi, turn on Wireless debugging; if its port changed,
    update `phone.connect`).
 2. `uv run gesture-control --phone`. The startup line says `Camera /dev/video10`.
-3. Quit as usual (`q`, Esc or Ctrl+C): scrcpy stops too.
+3. Quit as usual (`q`, Esc or Ctrl+C): scrcpy stops too, even if you press Ctrl+C
+   three times to quit at once.
+
+**If the phone drops out while the app runs** (cable pulled, Wi-Fi gone), held clicks
+and keys are released and the app reconnects by itself: it says
+`Phone disconnected (...). Reconnecting...` once, tries scrcpy again every 2 s, and says
+`Phone camera back after N s` when the picture returns. Plug the phone back in and carry
+on; no restart needed. A pinch you were holding has to be opened again before it clicks.
+It stops instead, with the reason, when retrying can't help (for example a
+`phone.size` the camera doesn't offer). Set `phone.reconnect: false` to always stop
+when the phone drops out.
 
 With `-v`, scrcpy's own messages are shown, starting with the exact scrcpy command.
 
@@ -222,7 +232,10 @@ With `-v`, scrcpy's own messages are shown, starting with the exact scrcpy comma
 | Window stays on *Starting camera and hand tracker...* | The app waits until the phone's frames reach `/dev/video10` (the first can take a few seconds), up to `phone.start_timeout_s`. Run with `-v` to see where scrcpy is. If it ends with `didn't start within`, check the picture by hand (step 6) |
 | `scrcpy stopped before the camera started` | The message shows scrcpy's last words and a likely fix: phone not connected, debugging prompt not accepted, a size the camera doesn't offer, or a changed Wi-Fi port |
 | Several devices listed by `adb devices` | Set `phone.serial` to the one to use, or `adb disconnect` the Wi-Fi connection |
-| `The phone camera stopped (scrcpy quit)` while running | The cable came out or the phone stopped the camera. Held buttons are released; reconnect and restart the app |
+| `Phone disconnected (...). Reconnecting...` while running | The cable came out, Wi-Fi dropped, or the phone stopped the camera. Plug it back in (or get it back on Wi-Fi): the app picks it up by itself within a few seconds |
+| It keeps reconnecting over Wi-Fi | If Wireless debugging was turned off and on, its port changed (the app says so): put the new address in `phone.connect` and restart the app |
+| It keeps reconnecting and says to allow USB debugging | Accept the "Allow USB debugging?" prompt on the phone (tick "Always allow from this computer" to skip it next time) |
+| `The phone camera can't reconnect: ...` | Retrying can't fix this one (the message says why); fix it and start the app again |
 | `No frames from the phone for N s` (scrcpy still running) | The phone stopped sending pictures: check the cable or Wi-Fi, and that the phone's camera is still on (unlock the phone if it locked) |
 | `--camera N can't be used with the phone camera` | With the phone on, the app reads the phone's virtual camera. For the laptop camera, add `--no-phone` (`uv run gesture-control --no-phone --camera 0`) |
 | Lower fps than expected in the preview | Use USB instead of Wi-Fi, lower `phone.bit_rate` (e.g. `4M`), or keep `size: 640x480` |
@@ -794,6 +807,7 @@ Absolute mode only:
 | `phone.connect` | `""` | Empty: USB. Wi-Fi: the address and port from the phone's Wireless debugging screen |
 | `phone.serial` | `""` | Only with several phones or connections: which one, as `adb devices` lists it |
 | `phone.start_timeout_s` | `20` | Give up if the phone's picture hasn't started by then |
+| `phone.reconnect` | `true` | If the phone drops out while the app runs, bring it back by itself (retrying every 2 s). `false`: stop the app instead |
 | `phone.extra_args` | `[]` | More scrcpy options, as a list, e.g. `[--camera-ar=4:3]` |
 
 #### `pause`, `safety`, `preview`
@@ -858,7 +872,8 @@ both modes, the touchpad-swipe scrolling (finger directions, re-grips, lifting o
 when still), config loading and validation, where config and the model live (project
 folder or installed), the two-hand tracking switch (with fake trackers), clean shutdown
 on Ctrl+C / `kill`, the stalled-camera preview, the camera reader's shutdown (with
-a fake camera), the phone camera (with a fake scrcpy), and the main loop itself with a
+a fake camera), the phone camera and its reconnecting (with a fake scrcpy that drops out and comes
+back, and a camera that allows only one reader, like the real one), and the main loop itself with a
 fake camera and hand tracker (startup errors, and the controller running on each
 frame's capture time). They read `config/gestures.yaml` but never your
 `local.yaml` or `calibration.yaml`, so your own settings don't change the results.

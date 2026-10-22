@@ -211,6 +211,8 @@ phone:
                         #   e.g. 192.168.1.42:41234 (the port changes when it's turned on)
   serial: ""            # only with several phones or connections: which one (adb devices)
   start_timeout_s: 20   # give up if the picture hasn't started by then
+  reconnect: true       # phone dropped out while running (cable, Wi-Fi): bring it
+                        #   back by itself. false: stop the app instead
   extra_args: []        # more scrcpy options, e.g. [--camera-ar=4:3]
 
 preview:

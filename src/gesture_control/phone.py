@@ -140,6 +140,7 @@ class PhoneCamera:
         self.node_exists = node_exists
         self.probe = probe
         self.proc: subprocess.Popen | None = None
+        self._launched: subprocess.Popen | None = None  # for kill_now()
         self.lines: collections.deque[str] = collections.deque(maxlen=40)
         self._ready = threading.Event()
         self._reader: threading.Thread | None = None
@@ -182,6 +183,19 @@ class PhoneCamera:
     def start(self, timeout: float | None = None) -> None:
         """Start scrcpy and wait until the phone's frames reach the virtual camera."""
         self.exe = self._check()
+        self._run(timeout)
+
+    def restart(self, timeout: float | None = None) -> None:
+        """Start scrcpy again after it quit while the app ran (the phone dropped out).
+        The app keeps its reader on the virtual camera open: frames resume on it
+        (measured: a second reader can't be opened while the first is). Raises
+        PhoneError if it can't start now; failure_kind() says whether to retry."""
+        self._run(timeout)
+
+    def _run(self, timeout: float | None) -> None:
+        self.lines.clear()            # this run's messages only (failure_kind reads them)
+        self._ready.clear()
+        self._said_stopped = False
         timeout = float(self.pc["start_timeout_s"]) if timeout is None else timeout
         if self.verbose:
             print("Phone camera: " + " ".join(self.command()))
@@ -194,7 +208,7 @@ class PhoneCamera:
                 # The app quit while the checks above ran: don't launch scrcpy only to
                 # wait start_timeout_s for it (that took 22 s in v0.18.0).
                 raise PhoneError("Stopped before the phone camera started")
-            proc = self.proc = self._launch()
+            proc = self.proc = self._launched = self._launch()
         self._reader = threading.Thread(target=self._read, args=(proc,), name="scrcpy",
                                         daemon=True)
         self._reader.start()
@@ -205,7 +219,7 @@ class PhoneCamera:
                 self._reader.join(1)
                 raise PhoneError(self._failure("scrcpy stopped before the camera started"))
             if time.monotonic() > end:
-                self.stop()
+                self._terminate()  # not stop(): a reconnect may try again later
                 raise PhoneError(self._failure(
                     f"The phone camera didn't start within {timeout:.0f} s"))
 
@@ -305,9 +319,12 @@ class PhoneCamera:
         if "--camera-size" in text or "camera size" in text.lower():
             tips.append("phone.size must be one of the sizes listed by: scrcpy "
                         "--video-source=camera --list-camera-sizes")
-        last = "\n".join(f"  {ln}" for ln in list(self.lines)[-8:]) or "  (no output)"
-        return (f"{what}.\nscrcpy said:\n{last}"
+        return (f"{what}.\nscrcpy said:\n{self.last_words()}"
                 + "".join(f"\n{t}" for t in tips))
+
+    def last_words(self) -> str:
+        """scrcpy's last few lines, indented."""
+        return "\n".join(f"  {ln}" for ln in list(self.lines)[-8:]) or "  (no output)"
 
     # -- while running ----------------------------------------------------------------
     def stopped_message(self) -> str:
@@ -323,12 +340,64 @@ class PhoneCamera:
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
+    @property
+    def stopping(self) -> bool:
+        """stop() was called: the app is quitting, nothing restarts scrcpy."""
+        return self._stopping.is_set()
+
+    def quit_reason(self) -> str:
+        """scrcpy's own last warning or error, e.g. "Device disconnected"."""
+        for line in reversed(self.lines):
+            m = re.match(r"(?:\[server\]\s*)?(?:WARN|ERROR):\s*(.+)", line)
+            if m:
+                return m.group(1).strip()
+        return "no message"
+
+    def failure_kind(self) -> tuple[bool, str]:
+        """After scrcpy failed or quit: (can a retry fix it?, a one-line hint or "").
+
+        Retrying fixes a phone that's unplugged, still being set up by adb, waiting
+        for the "Allow USB debugging?" prompt, or briefly off Wi-Fi. It can't fix a
+        camera size or camera the phone doesn't offer: the same command fails again."""
+        text = "\n".join(self.lines)
+        low = text.lower()
+        if "--camera-size" in text or "camera size" in low:
+            return False, ("phone.size isn't a size this camera offers (see: scrcpy "
+                           "--video-source=camera --list-camera-sizes)")
+        if "--camera-facing" in text or "no camera" in low or "camera not found" in low:
+            return False, "the phone has no camera facing phone.facing"
+        if "unauthorized" in text:
+            return True, "the phone asks 'Allow USB debugging?': accept it on the phone"
+        if self.pc["connect"] and ("Could not connect" in text
+                                   or "Connection refused" in text):
+            return True, (f"can't reach {self.pc['connect']}. If Wireless debugging was "
+                          "turned off and on, its port changed: put the new address in "
+                          f"phone.connect ({shown('local.yaml')}) and restart the app")
+        return True, ""
+
     # -- stop ---------------------------------------------------------------------------
+    def kill_now(self) -> None:
+        """Kill scrcpy at once, without waiting (the app's forced quit). Safe to call
+        from a signal handler. Uses the last launched process, not self.proc: a normal
+        stop() clears that before it waits up to 3 s for scrcpy to quit, and the
+        forced quit usually comes during that wait."""
+        proc = self._launched
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
     def stop(self) -> None:
         """Ask scrcpy to quit (like Ctrl+C), then make sure it has. Before start() has
-        launched it, this makes start() give up instead."""
+        launched it, this makes start() give up instead, and no restart() follows."""
         with self._lock:
             self._stopping.set()
+        self._terminate()
+
+    def _terminate(self) -> None:
+        """Stop this scrcpy run (a later restart() may start another)."""
+        with self._lock:
             proc, self.proc = self.proc, None
         if proc is None:
             return
@@ -359,3 +428,136 @@ def apply_settings(cfg: dict[str, Any]) -> None:
     cam["fps"] = int(pc["fps"])
     cam["lock_framerate"] = False  # the virtual camera has no exposure controls
 
+
+
+# -- reconnecting while the app runs -------------------------------------------------
+
+RETRY_S = 2.0            # try scrcpy again this often while the phone is away
+FRAMES_WITHIN_S = 5.0    # scrcpy restarted but no frames this long after: try again
+RECONNECT_START_TIMEOUT_S = 10.0  # one attempt's wait for the picture
+
+
+class Reconnector:
+    """Brings the phone camera back after it dropped out (cable out, Wi-Fi blip), in
+    the background so the preview, q and Ctrl+C keep working.
+
+    The app's reader on the virtual camera stays open the whole time: when scrcpy runs
+    again, frames resume on it. (Measured on the phone this was built for: a second
+    reader can't be opened while the first is, and frames do resume on the first.)
+
+    state: "idle" (phone fine), "reconnecting" (retrying scrcpy), "started" (scrcpy
+    runs again, waiting for frames), "failed" (a retry can't fix it: error says why).
+    Messages for the terminal pile up in take_messages(), each said once."""
+
+    def __init__(self, cam: PhoneCamera, retry_s: float = RETRY_S,
+                 frames_within_s: float = FRAMES_WITHIN_S,
+                 start_timeout: float = RECONNECT_START_TIMEOUT_S, clock=time.monotonic):
+        self.cam = cam
+        self.retry_s, self.frames_within_s = retry_s, frames_within_s
+        self.start_timeout = start_timeout
+        self.clock = clock
+        self.state = "idle"
+        self.error = ""
+        self.since: float | None = None   # when the phone dropped out
+        self._started_at = 0.0
+        self._messages: collections.deque[str] = collections.deque()
+        self._said: set[str] = set()
+        self._wake = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def active(self) -> bool:
+        """The phone is away and being brought back."""
+        return self.state in ("reconnecting", "started")
+
+    def take_messages(self) -> list[str]:
+        out = []
+        while self._messages:
+            out.append(self._messages.popleft())
+        return out
+
+    def _say(self, text: str) -> None:
+        if text not in self._said:
+            self._said.add(text)
+            self._messages.append(text)
+
+    # -- what the app calls ------------------------------------------------------------
+    def begin(self, now: float) -> None:
+        """scrcpy has quit while the app ran: start bringing it back."""
+        self.since = now
+        self._said.clear()
+        self._say(f"Phone disconnected (scrcpy: {self.cam.quit_reason()}). Reconnecting "
+                  f"every {self.retry_s:g} s: plug it back in, or q / Ctrl+C to quit.")
+        self._spawn()
+
+    def check(self, now: float) -> None:
+        """Call while no frames arrive. scrcpy that runs again but sends nothing (or
+        quit again) is stopped and tried again."""
+        if self.state != "started":
+            return
+        if not self.cam.running:
+            self._spawn()                  # quit again (unplugged while restarting)
+        elif now - self._started_at > self.frames_within_s:
+            self._messages.append(f"scrcpy runs again, but no frames arrived within "
+                                  f"{self.frames_within_s:g} s: trying again.")
+            self.cam._terminate()
+            self._spawn()
+
+    def frames_back(self, now: float) -> bool:
+        """A frame arrived. True (once) if it ends a disconnection."""
+        if not self.active:
+            return False
+        self.state = "idle"
+        self._messages.append(f"Phone camera back after {now - (self.since or now):.0f} s.")
+        return True
+
+    def stop(self) -> None:
+        """The app is quitting: no more attempts (cam.stop() ends one in progress)."""
+        self._wake.set()
+        th = self._thread
+        if th is not None and th is not threading.current_thread():
+            th.join(timeout=1.0)
+
+    # -- the background retries --------------------------------------------------------
+    def _spawn(self) -> None:
+        self.state = "reconnecting"
+        self._thread = threading.Thread(target=self._loop, name="phone-reconnect",
+                                        daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while not (self.cam.stopping or self._wake.is_set()):
+            try:
+                self.cam.restart(self.start_timeout)
+            except PhoneError:
+                if self.cam.stopping or self._wake.is_set():
+                    return
+                retry, hint = self.cam.failure_kind()
+                if not retry:
+                    self.error = (f"The phone camera can't reconnect: {hint}.\n"
+                                  f"scrcpy said:\n{self.cam.last_words()}")
+                    self.state = "failed"
+                    return
+                if hint:
+                    self._say(hint[0].upper() + hint[1:] + ".")
+                if self._wake.wait(self.retry_s):
+                    return
+                continue
+            self._started_at = self.clock()
+            self.state = "started"
+            return
+
+
+def quiet_opencv(quiet: bool, _saved: list = []) -> None:  # noqa: B006 (kept level)
+    """While the phone is away, OpenCV's reader warns "select() timeout" every 10 s.
+    quiet=True hides OpenCV's warnings (errors still show); quiet=False puts the
+    previous level back."""
+    import cv2
+
+    log = cv2.utils.logging
+    if quiet:
+        if not _saved:
+            _saved.append(log.getLogLevel())
+            log.setLogLevel(log.LOG_LEVEL_ERROR)
+    elif _saved:
+        log.setLogLevel(_saved.pop())

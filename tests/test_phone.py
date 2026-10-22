@@ -24,6 +24,21 @@ if "--version" in sys.argv:
     sys.exit(0)
 with open({args_file!r}, "w") as f:
     f.write("\n".join(sys.argv[1:]))
+if mode.startswith("plan:"):
+    # One mode per launch, like a phone unplugged and plugged back in:
+    # "plan:quits-later,no-device,ok" = first run, second run, third and later runs.
+    steps = mode[5:].split(",")
+    runs = {args_file!r} + ".runs"
+    try:
+        n = int(open(runs).read())
+    except (OSError, ValueError):
+        n = 0
+    with open(runs, "w") as f:
+        f.write(str(n + 1))
+    mode = steps[min(n, len(steps) - 1)]
+if mode == "unauthorized":
+    print("ERROR: Device is unauthorized: accept the prompt on the device", flush=True)
+    sys.exit(1)
 print("INFO: ADB device found:", flush=True)
 if mode == "no-device":
     print("ERROR: Could not find any ADB device", flush=True)
@@ -465,3 +480,178 @@ def test_bit_rate_can_be_a_plain_number(tmp_path, value, sent):
     (tmp_path / "local.yaml").write_text(yaml.safe_dump({"phone": {"bit_rate": value}}))
     pc = load_config(tmp_path / "gestures.yaml")["phone"]
     assert f"--video-bit-rate={sent}" in scrcpy_command(pc)
+
+
+# -- reconnecting while the app runs (v0.19.0) -----------------------------------------------
+
+def _wait(cond, timeout=8.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if cond():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def _runs(args) -> int:
+    try:
+        return int(args.with_name(args.name + ".runs").read_text())
+    except OSError:
+        return 0
+
+
+def _dropped(tmp_path, plan):
+    """A phone camera that started, then dropped out ("Device disconnected"); its
+    later launches follow `plan` (comma-separated modes)."""
+    cam, args = _camera(tmp_path, mode=f"plan:quits-later,{plan}")
+    cam.start()
+    assert _wait(lambda: not cam.running)
+    return cam, args
+
+
+def _reconnector(cam, clock=time.monotonic):
+    return ph.Reconnector(cam, retry_s=0.05, frames_within_s=5.0, start_timeout=3.0,
+                          clock=clock)
+
+
+def test_reconnects_once_the_phone_is_back(tmp_path):
+    """Unplugged for 3 tries, then plugged back in: scrcpy runs again by itself."""
+    cam, args = _dropped(tmp_path, "no-device,no-device,no-device,ok")
+    rc = _reconnector(cam)
+    try:
+        rc.begin(time.monotonic())
+        assert rc.active
+        assert _wait(lambda: rc.state == "started")
+        assert cam.running and _runs(args) == 5        # first start, 3 failures, success
+        assert rc.frames_back(time.monotonic()) and rc.state == "idle"
+        msgs = rc.take_messages()
+        assert msgs[0].startswith("Phone disconnected (scrcpy: Device disconnected). "
+                                  "Reconnecting every 0.05 s")
+        assert msgs[-1].startswith("Phone camera back after")
+        assert not rc.frames_back(time.monotonic())    # said once
+    finally:
+        cam.stop()
+        rc.stop()
+
+
+def test_debugging_prompt_is_mentioned_once_while_retrying(tmp_path):
+    cam, _ = _dropped(tmp_path, "unauthorized,unauthorized,unauthorized,ok")
+    rc = _reconnector(cam)
+    try:
+        rc.begin(time.monotonic())
+        assert _wait(lambda: rc.state == "started")
+        msgs = rc.take_messages()
+        assert sum("Allow USB debugging?" in m for m in msgs) == 1
+    finally:
+        cam.stop()
+        rc.stop()
+
+
+def test_a_failure_retrying_cant_fix_stops_the_reconnect(tmp_path):
+    cam, _ = _dropped(tmp_path, "no-device,bad-size")
+    rc = _reconnector(cam)
+    try:
+        rc.begin(time.monotonic())
+        assert _wait(lambda: rc.state == "failed")
+        assert "can't reconnect: phone.size isn't a size this camera offers" in rc.error
+        assert "Could not find camera size" in rc.error           # scrcpy's own words
+        assert not rc.active
+    finally:
+        cam.stop()
+        rc.stop()
+
+
+def test_scrcpy_that_runs_but_sends_no_frames_is_restarted(tmp_path):
+    """The safety net: running again isn't enough, frames must arrive within 5 s."""
+    clock = type("Clock", (), {"t": 0.0})()
+    cam, args = _dropped(tmp_path, "ok")
+    rc = _reconnector(cam, clock=lambda: clock.t)
+    try:
+        rc.begin(0.0)
+        assert _wait(lambda: rc.state == "started")
+        first = cam.proc
+        rc.check(4.0)
+        assert rc.state == "started"                   # still within 5 s
+        clock.t = 0.0
+        rc.check(5.5)
+        assert any("no frames arrived within 5 s" in m for m in rc.take_messages())
+        assert first.poll() is not None                # that run was stopped...
+        assert _wait(lambda: rc.state == "started") and cam.running   # ...and another started
+        assert _runs(args) == 3
+    finally:
+        cam.stop()
+        rc.stop()
+
+
+@pytest.mark.parametrize("plan", ["no-device", "hang"])   # between tries / during one
+def test_quitting_while_reconnecting_is_quick_and_leaves_no_scrcpy(tmp_path, plan):
+    cam, _ = _dropped(tmp_path, plan)
+    rc = ph.Reconnector(cam, retry_s=2.0, start_timeout=20.0)
+    rc.begin(time.monotonic())
+    time.sleep(0.4)
+    t = time.monotonic()
+    cam.stop()
+    rc.stop()
+    assert time.monotonic() - t < 1.5
+    assert not cam.running and (cam.proc is None or cam.proc.poll() is not None)
+    assert rc._thread is None or not rc._thread.is_alive()
+
+
+def test_forced_quit_kills_scrcpy_at_once(tmp_path):
+    cam, args = _camera(tmp_path, mode="ignores-sigint")   # even one that ignores Ctrl+C
+    cam.start()
+    proc = cam.proc
+    t = time.monotonic()
+    cam.kill_now()
+    assert _wait(lambda: proc.poll() is not None, timeout=2.0)
+    assert time.monotonic() - t < 1.0
+
+
+@pytest.mark.parametrize("line, retry, hint", [
+    ("ERROR: Could not find any ADB device", True, ""),
+    ("WARN: Device disconnected", True, ""),
+    ("ERROR: Device is unauthorized", True, "Allow USB debugging?"),
+    ("ERROR: Could not find camera size 999x999 (--camera-size)", False, "phone.size"),
+])
+def test_which_failures_a_retry_can_fix(tmp_path, line, retry, hint):
+    cam, _ = _camera(tmp_path)
+    cam.lines.append(line)
+    can_retry, text = cam.failure_kind()
+    assert can_retry == retry and hint in text
+
+
+def test_wifi_that_cant_be_reached_suggests_the_new_port(tmp_path):
+    cam, _ = _camera(tmp_path, connect="192.168.1.42:41234")
+    cam.lines.append("ERROR: Could not connect to 192.168.1.42:41234")
+    can_retry, text = cam.failure_kind()
+    assert can_retry and "port changed" in text and "phone.connect" in text
+
+
+def test_opencv_warnings_are_hidden_only_while_the_phone_is_away():
+    import cv2
+
+    log = cv2.utils.logging
+    before = log.getLogLevel()
+    ph.quiet_opencv(True)
+    ph.quiet_opencv(True)                      # twice: still restores the original
+    assert log.getLogLevel() == log.LOG_LEVEL_ERROR
+    ph.quiet_opencv(False)
+    assert log.getLogLevel() == before
+
+
+def test_forced_quit_kills_scrcpy_even_while_a_normal_stop_waits_for_it(tmp_path):
+    """Ctrl+C starts a normal stop, which gives scrcpy 3 s to quit; a forced quit
+    (third Ctrl+C) during that wait must still find scrcpy and kill it."""
+    import threading
+
+    cam, _ = _camera(tmp_path, mode="ignores-sigint")
+    cam.start()
+    proc = cam.proc
+    stopper = threading.Thread(target=cam.stop)
+    stopper.start()
+    time.sleep(0.3)                          # the normal stop is waiting now
+    t = time.monotonic()
+    cam.kill_now()
+    assert _wait(lambda: proc.poll() is not None, timeout=2.0)
+    assert time.monotonic() - t < 1.0
+    stopper.join(5)

@@ -26,6 +26,35 @@ PHONE_STALL_HINT = ("is the phone still connected (cable or Wi-Fi) and its camer
                     "still on?")
 
 
+RECONNECTING_HINT = "phone disconnected: reconnecting, plug it back in"
+
+
+def phone_stalled(phone_cam, reconnector, now: float) -> str:
+    """No frames for a second, with the phone as the camera. Notices scrcpy quitting
+    (phone unplugged, Wi-Fi gone) and brings it back, or says why it can't.
+    Returns "stop" (quit the app), "reconnecting" (the phone is being brought
+    back; the usual no-frames line isn't needed) or "" (scrcpy still runs)."""
+    if reconnector is None:  # phone.reconnect: false
+        if msg := phone_cam.stopped_message():
+            print(msg.replace("Restart gesture-control once the phone is connected again.",
+                              "Stopping, as phone.reconnect is false. Start the app again "
+                              "once the phone is connected."), file=sys.stderr)
+            return "stop"
+        return ""
+    from .phone import quiet_opencv
+
+    if reconnector.state == "idle" and not phone_cam.running and not phone_cam.stopping:
+        reconnector.begin(now)
+        quiet_opencv(True)  # the open reader's "select() timeout" warnings, every 10 s
+    reconnector.check(now)
+    for msg in reconnector.take_messages():
+        print(msg)
+    if reconnector.state == "failed":
+        print(reconnector.error, file=sys.stderr)
+        return "stop"
+    return "reconnecting" if reconnector.active else ""
+
+
 def stall_message(seconds: float, phone: bool) -> str:
     """What the terminal says while no frames arrive."""
     what, hint = (("the phone", PHONE_STALL_HINT) if phone
@@ -378,11 +407,18 @@ class ShutdownGuard:
 
     SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
+    DOING = "releasing buttons, closing the camera"
+    TRACKER_LOADING = "waiting for the hand tracker to finish loading, a few seconds"
+
     def __init__(self, exit_now=os._exit, say=print):
         self._exit_now, self._say = exit_now, say
         self._cleaning = False
         self._repeats = 0
         self._old: dict[int, object] = {}
+        self.doing = self.DOING       # what cleanup is busy with, for the message
+        # Run on a forced quit, just before exiting: things the kernel won't clean up
+        # (scrcpy runs in its own process group, so Ctrl+C never reaches it).
+        self.on_force_quit: list = []
 
     def install(self) -> None:
         for sig in self.SIGNALS:
@@ -402,11 +438,16 @@ class ShutdownGuard:
         self._repeats += 1
         if self._repeats == 1:
             try:  # the terminal may already be gone (SIGHUP)
-                self._say("Still stopping (releasing buttons, closing the camera)... "
+                self._say(f"Still stopping ({self.doing})... "
                           "press Ctrl+C again to quit at once.")
             except OSError:
                 pass
         else:
+            for stop in self.on_force_quit:
+                try:
+                    stop()
+                except Exception:  # noqa: BLE001  (quitting at once whatever happens)
+                    pass
             self._exit_now(130)
 
 
@@ -518,11 +559,14 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
                 timings[name] = time.monotonic() - t
         return run
 
-    phone_cam = None
+    phone_cam = reconnector = None
     if cfg["phone"]["enabled"]:
-        from .phone import PhoneCamera
+        from .phone import PhoneCamera, Reconnector, quiet_opencv
 
         phone_cam = PhoneCamera(cfg["phone"], verbose=args.verbose)
+        guard.on_force_quit.append(phone_cam.kill_now)  # never leave scrcpy running
+        if cfg["phone"]["reconnect"]:
+            reconnector = Reconnector(phone_cam)
 
     def start_camera():
         from .capture import Camera
@@ -657,14 +701,23 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
                     for ev in status.events:
                         print(f"{time.strftime('%H:%M:%S')} {ev}")
                 now = time.monotonic()
-                if phone_cam is not None and (msg := phone_cam.stopped_message()):
-                    print(msg, file=sys.stderr)
+                prev_anchor = prev_other = None  # the hands are found afresh after it
+                phone_state = ""
+                if phone_cam is not None:
+                    phone_state = phone_stalled(phone_cam, reconnector, now)
+                    if phone_state == "stop":
+                        break
                 if stall_since is None:
                     stall_since = now - 1.0  # the read above already waited 1 s
                     stall_said = stall_since
-                if now - stall_said > 5:
+                if phone_state == "reconnecting":
+                    stall_said = now  # its own messages say what's happening
+                elif now - stall_said > 5:
                     print(stall_message(now - stall_since, phone_cam is not None))
                     stall_said = now
+                if overlay and phone_cam is not None:
+                    overlay.stall_hint = (RECONNECTING_HINT if phone_state == "reconnecting"
+                                          else PHONE_STALL_HINT)
                 if overlay:
                     # Say so in the window (it would otherwise just freeze) and keep it
                     # responsive (q / Esc / close) even without frames.
@@ -673,6 +726,10 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
                         break
                 continue
             stall_since = None
+            if reconnector is not None and reconnector.frames_back(time.monotonic()):
+                for msg in reconnector.take_messages():
+                    print(msg)
+                quiet_opencv(False)
             frame, cap_ts, seq = item
             if mirror:
                 frame = frame[:, ::-1].copy()  # mirror before detection: handedness stays correct
@@ -749,6 +806,8 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
         # Quitting during startup: let the background start finish, then undo it.
         if phone_cam is not None and camera_f is not None and not camera_f.done():
             phone_cam.stop()  # don't wait for the phone: its start fails right away
+        if tracker_f is not None and not tracker_f.done():
+            guard.doing = guard.TRACKER_LOADING  # it can't be cut short; say so
         for fut, close in ((camera_f, "stop"), (tracker_f, "close")):
             if fut is None:  # stopped before it was started
                 continue
@@ -759,8 +818,12 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
             if obj is not None:
                 getattr(obj, close)()
         pool.shutdown()
+        guard.doing = guard.DOING
         if phone_cam is not None:
             phone_cam.stop()  # after the camera: it reads scrcpy's virtual camera
+        if reconnector is not None:
+            reconnector.stop()  # (phone_cam.stop() already ended an attempt under way)
+            quiet_opencv(False)
         print("Stopped.")
 
 

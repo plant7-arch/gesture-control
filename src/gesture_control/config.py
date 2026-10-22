@@ -193,6 +193,7 @@ DEFAULTS: dict[str, Any] = {
         "connect": "",
         "serial": "",
         "start_timeout_s": 20,
+        "reconnect": True,
         "extra_args": [],
     },
     "preview": {
