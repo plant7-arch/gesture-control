@@ -624,7 +624,7 @@ def test_wifi_that_cant_be_reached_suggests_the_new_port(tmp_path):
     cam, _ = _camera(tmp_path, connect="192.168.1.42:41234")
     cam.lines.append("ERROR: Could not connect to 192.168.1.42:41234")
     can_retry, text = cam.failure_kind()
-    assert can_retry and "port changed" in text and "phone.connect" in text
+    assert can_retry and "port changed" in text and "--connect" in text
 
 
 def test_opencv_warnings_are_hidden_only_while_the_phone_is_away():
@@ -655,3 +655,51 @@ def test_forced_quit_kills_scrcpy_even_while_a_normal_stop_waits_for_it(tmp_path
     assert _wait(lambda: proc.poll() is not None, timeout=2.0)
     assert time.monotonic() - t < 1.0
     stopper.join(5)
+
+
+
+# -- --connect: the Wi-Fi address on the command line (v0.19.1) ---------------------------
+
+def test_connect_flag_uses_the_phone_over_wifi_at_that_address(monkeypatch, tmp_path):
+    """The Wi-Fi address changes each time Wireless debugging is turned on, so it can be
+    given per run: --connect implies --phone and overrides phone.connect."""
+    import shutil
+
+    from gesture_control import app
+    from gesture_control.config import DEFAULT_CONFIG_PATH
+
+    shutil.copy(DEFAULT_CONFIG_PATH, tmp_path / "gestures.yaml")
+    (tmp_path / "local.yaml").write_text("phone:\n  connect: 10.0.0.5:5555\n")
+    seen = {}
+
+    def stop_after_config(cfg, *a, **k):
+        seen.update(phone=dict(cfg["phone"]), index=cfg["camera"]["index"])
+        raise SystemExit(0)
+
+    monkeypatch.setattr(app, "_resolve_output", stop_after_config)
+    with pytest.raises(SystemExit):
+        app.main(["--config", str(tmp_path / "gestures.yaml"), "--pointer-test",
+                  "--dry-run", "--connect", "192.168.1.42:41234"])
+    assert seen["phone"]["enabled"] and seen["index"] == 10
+    assert seen["phone"]["connect"] == "192.168.1.42:41234"
+    assert scrcpy_command(seen["phone"])[1] == "--tcpip=192.168.1.42:41234"
+
+
+@pytest.mark.parametrize("argv, message", [
+    (["--connect", "192.168.1.42"], "isn't an address like 192.168.1.42:41234"),
+    (["--connect", "192.168.1.42:37123 x"], "isn't an address"),
+    (["--no-phone", "--connect", "192.168.1.42:41234"], "not allowed with argument --no-phone"),
+])
+def test_bad_connect_flags_are_refused(capsys, argv, message):
+    from gesture_control.app import parse_args
+
+    with pytest.raises(SystemExit):
+        parse_args(argv)
+    assert message in capsys.readouterr().err
+
+
+def test_connect_works_together_with_phone():
+    from gesture_control.app import parse_args
+
+    args = parse_args(["--phone", "--connect", "192.168.1.42:41234"])
+    assert args.phone and args.connect == "192.168.1.42:41234"

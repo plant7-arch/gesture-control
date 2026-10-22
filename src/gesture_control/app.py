@@ -91,6 +91,10 @@ def parse_args(argv=None) -> argparse.Namespace:
                             "at exit (sets phone.enabled; README > Phone as the camera)")
     phone.add_argument("--no-phone", action="store_true",
                        help="use the laptop camera even if phone.enabled is set")
+    p.add_argument("--connect", metavar="IP:PORT", type=_wifi_address,
+                   help="use the phone over Wi-Fi at this address, the 'IP address & "
+                        "Port' on its Wireless debugging screen (it changes each time "
+                        "that's turned on). Implies --phone; overrides phone.connect")
     p.add_argument("--mode", choices=["absolute", "relative"],
                    help="override cursor.mode (relative: touchpad-like, absolute: hand = screen)")
     p.add_argument("--no-preview", action="store_true", help="run without the preview window")
@@ -114,7 +118,21 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="measure the trackball output (after its one-time setup), then exit")
     p.add_argument("-v", "--verbose", action="store_true", help="print every action")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.connect and args.no_phone:
+        p.error("argument --connect: not allowed with argument --no-phone")
+    return args
+
+
+def _wifi_address(text: str) -> str:
+    """--connect's value: IP:PORT, as on the phone's Wireless debugging screen."""
+    from .phone import ADDRESS_RE
+
+    if not ADDRESS_RE.match(text):
+        raise argparse.ArgumentTypeError(
+            f"{text!r} isn't an address like 192.168.1.42:41234 (the 'IP address & Port' "
+            "on the phone's Wireless debugging screen)")
+    return text
 
 
 def _make_pointer(mode: str, dry_run: bool, settle: float = 0.5) -> VirtualPointer:
@@ -472,7 +490,9 @@ def _main(args: argparse.Namespace, guard: ShutdownGuard) -> None:
         sys.exit(f"Config error: {exc}")
     for warning in cfg["_warnings"]:
         print(f"Config warning: {warning}")
-    if args.phone:
+    if args.connect:  # the Wi-Fi address changes each time: given per run, not saved
+        cfg["phone"]["connect"] = args.connect
+    if args.phone or args.connect:
         cfg["phone"]["enabled"] = True
     if args.no_phone:
         cfg["phone"]["enabled"] = False

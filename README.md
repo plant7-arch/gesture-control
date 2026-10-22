@@ -169,12 +169,24 @@ uv run gesture-control --phone
      ```bash
      adb pair 192.168.1.42:37123     # the address and port shown in the pairing popup
      ```
-     and enter the 6-digit code. Pairing is once per laptop. Then put the address from
-     the main Wireless debugging screen (a different port) in `local.yaml` (below).
+     and enter the 6-digit code. Pairing is once per laptop: it only makes the laptop
+     trusted, it doesn't connect. To connect, use the **IP address & Port** on the main
+     Wireless debugging screen, a *different* port from the pairing one:
+     ```bash
+     adb connect 192.168.1.42:41234  # "IP address & Port" on the Wireless debugging screen
+     adb devices                     # lists 192.168.1.42:41234  device
+     ```
+     That port changes every time Wireless debugging is turned on (and after a phone
+     restart), so you look it up each time. The app connects by itself when given the
+     address (`--connect`, see [Each time](#each-time)); `adb connect` is only needed
+     for the scrcpy commands you type yourself (steps 5 and 6).
 5. **Choose the camera and size.** List what the phone offers:
    ```bash
    scrcpy --video-source=camera --list-camera-sizes
    ```
+   Over Wi-Fi, run `adb connect` first (step 4) and add `-e` (use the Wi-Fi
+   connection): `scrcpy -e --video-source=camera --list-camera-sizes`. Without it,
+   scrcpy says `Could not find any ADB device`.
    `back` is the main rear camera (sharper, better in indoor light); `front` the selfie
    camera (you can see the phone's screen). Pick a listed size: `640x480` frames like a
    laptop webcam and is the lightest; bigger sizes don't track better. Stay at 30 fps:
@@ -186,6 +198,7 @@ uv run gesture-control --phone
           --no-audio --v4l2-sink=/dev/video10 --no-window &
    ffplay /dev/video10    # the phone's picture; close it, then: kill %1
    ```
+   (Over Wi-Fi, add `-e` to the scrcpy line here too.)
 
 #### Settings
 
@@ -197,18 +210,25 @@ phone:
   enabled: true          # use the phone every time (or start with --phone)
   facing: back
   size: 640x480
-  # connect: 192.168.1.42:41234   # Wi-Fi only: from the Wireless debugging screen
 ```
 
 `--phone` uses the phone for one run; `--no-phone` uses the laptop camera even with
-`enabled: true`. The app reads `/dev/video10` at the phone's size by itself: no
+`enabled: true`. For Wi-Fi, give the address on the command line with `--connect`
+(next section): it changes every time, so it isn't worth saving. (`phone.connect` can
+hold one, for a phone whose address stays the same; `--connect` overrides it.) The app reads `/dev/video10` at the phone's size by itself: no
 `camera:` settings needed.
 
 #### Each time
 
-1. Plug the phone in (or, for Wi-Fi, turn on Wireless debugging; if its port changed,
-   update `phone.connect`).
-2. `uv run gesture-control --phone`. The startup line says `Camera /dev/video10`.
+1. **USB:** plug the phone in and run `uv run gesture-control --phone`.
+
+   **Wi-Fi:** turn on Wireless debugging on the phone, open it, and use its
+   **IP address & Port**:
+   ```bash
+   uv run gesture-control --connect 192.168.1.42:41234
+   ```
+   `--connect` implies `--phone`; the app connects by itself (no `adb connect` needed).
+2. The startup line says `Camera /dev/video10`.
 3. Quit as usual (`q`, Esc or Ctrl+C): scrcpy stops too, even if you press Ctrl+C
    three times to quit at once.
 
@@ -233,7 +253,8 @@ With `-v`, scrcpy's own messages are shown, starting with the exact scrcpy comma
 | `scrcpy stopped before the camera started` | The message shows scrcpy's last words and a likely fix: phone not connected, debugging prompt not accepted, a size the camera doesn't offer, or a changed Wi-Fi port |
 | Several devices listed by `adb devices` | Set `phone.serial` to the one to use, or `adb disconnect` the Wi-Fi connection |
 | `Phone disconnected (...). Reconnecting...` while running | The cable came out, Wi-Fi dropped, or the phone stopped the camera. Plug it back in (or get it back on Wi-Fi): the app picks it up by itself within a few seconds |
-| It keeps reconnecting over Wi-Fi | If Wireless debugging was turned off and on, its port changed (the app says so): put the new address in `phone.connect` and restart the app |
+| It keeps reconnecting over Wi-Fi | If Wireless debugging was turned off and on, its port changed (the app says so): quit, and start again with `--connect` and the new **IP address & Port** |
+| `Could not find any ADB device` from a scrcpy command you typed, over Wi-Fi | Pairing doesn't connect: run `adb connect IP:PORT` (the Wireless debugging screen's IP address & Port) and add `-e` to the scrcpy command (setup step 4) |
 | It keeps reconnecting and says to allow USB debugging | Accept the "Allow USB debugging?" prompt on the phone (tick "Always allow from this computer" to skip it next time) |
 | `The phone camera can't reconnect: ...` | Retrying can't fix this one (the message says why); fix it and start the app again |
 | `No frames from the phone for N s` (scrcpy still running) | The phone stopped sending pictures: check the cable or Wi-Fi, and that the phone's camera is still on (unlock the phone if it locked) |
@@ -804,7 +825,7 @@ Absolute mode only:
 | `phone.fps` | `30` | Frame rate asked of the phone |
 | `phone.bit_rate` | `8M` | Video bit rate from the phone (`8M`, `4000K` or a plain number like `8000000`); lower it (e.g. `4M`) if the picture stutters over Wi-Fi |
 | `phone.video_device` | `10` | The virtual camera's number: `/dev/video10` (v4l2loopback `video_nr`) |
-| `phone.connect` | `""` | Empty: USB. Wi-Fi: the address and port from the phone's Wireless debugging screen |
+| `phone.connect` | `""` | Empty: USB. Wi-Fi: the IP address & Port from the phone's Wireless debugging screen. Since that changes every time, usually given with `--connect` instead, which overrides this |
 | `phone.serial` | `""` | Only with several phones or connections: which one, as `adb devices` lists it |
 | `phone.start_timeout_s` | `20` | Give up if the phone's picture hasn't started by then |
 | `phone.reconnect` | `true` | If the phone drops out while the app runs, bring it back by itself (retrying every 2 s). `false`: stop the app instead |

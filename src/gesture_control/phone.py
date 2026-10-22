@@ -306,8 +306,9 @@ class PhoneCamera:
         text = "\n".join(self.lines)
         tips = []
         if "Could not find any ADB device" in text or "no devices" in text.lower():
-            tips.append("Is the phone connected, with USB debugging on (or Wireless "
-                        "debugging and phone.connect set)? `adb devices` must list it.")
+            tips.append("Is the phone connected, with USB debugging on? `adb devices` "
+                        "must list it. Over Wi-Fi: start the app with --connect and the "
+                        "'IP address & Port' from the phone's Wireless debugging screen.")
         if "Multiple" in text and "devices" in text:
             tips.append("Several phones or connections are listed by `adb devices`: set "
                         f"phone.serial in {shown('local.yaml')} (or run adb disconnect).")
@@ -315,7 +316,8 @@ class PhoneCamera:
             tips.append("Accept the 'Allow USB debugging?' prompt on the phone.")
         if "Could not connect" in text or "Connection refused" in text:
             tips.append("Wireless debugging's port changes each time it's turned on: "
-                        "update phone.connect from the phone's Wireless debugging screen.")
+                        "start the app again with --connect and the new 'IP address & "
+                        "Port' from the phone's Wireless debugging screen.")
         if "--camera-size" in text or "camera size" in text.lower():
             tips.append("phone.size must be one of the sizes listed by: scrcpy "
                         "--video-source=camera --list-camera-sizes")
@@ -371,8 +373,9 @@ class PhoneCamera:
         if self.pc["connect"] and ("Could not connect" in text
                                    or "Connection refused" in text):
             return True, (f"can't reach {self.pc['connect']}. If Wireless debugging was "
-                          "turned off and on, its port changed: put the new address in "
-                          f"phone.connect ({shown('local.yaml')}) and restart the app")
+                          "turned off and on, its port changed: quit and start the app "
+                          "with --connect and the new 'IP address & Port' from the "
+                          "phone's Wireless debugging screen")
         return True, ""
 
     # -- stop ---------------------------------------------------------------------------
@@ -464,6 +467,8 @@ class Reconnector:
         self._said: set[str] = set()
         self._wake = threading.Event()
         self._thread: threading.Thread | None = None
+        # state is changed by the app (frames_back) and the retry thread: one at a time.
+        self._state_lock = threading.Lock()
 
     @property
     def active(self) -> bool:
@@ -505,9 +510,10 @@ class Reconnector:
 
     def frames_back(self, now: float) -> bool:
         """A frame arrived. True (once) if it ends a disconnection."""
-        if not self.active:
-            return False
-        self.state = "idle"
+        with self._state_lock:
+            if not self.active:
+                return False
+            self.state = "idle"
         self._messages.append(f"Phone camera back after {now - (self.since or now):.0f} s.")
         return True
 
@@ -543,8 +549,14 @@ class Reconnector:
                 if self._wake.wait(self.retry_s):
                     return
                 continue
-            self._started_at = self.clock()
-            self.state = "started"
+            with self._state_lock:
+                # Frames often arrive before restart() returns (it waits FIRST_FRAME_S
+                # after the picture starts): then frames_back() has already ended the
+                # disconnection, and it must stay ended. (v0.19.0 set "started" here
+                # regardless, so the next frame said "Phone camera back" a second time.)
+                if self.state == "reconnecting":
+                    self._started_at = self.clock()
+                    self.state = "started"
             return
 
 

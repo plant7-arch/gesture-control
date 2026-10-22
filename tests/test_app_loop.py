@@ -174,13 +174,16 @@ def test_stall_messages_name_the_phone_when_it_is_the_camera():
 def _phone_app(monkeypatch, tmp_path, plan, local=""):
     """The app with --phone: a fake scrcpy following `plan` (one mode per launch, see
     test_phone.FAKE) and a camera that, like v4l2loopback, allows only one reader and
-    has frames only while scrcpy runs. Stops after 15 frames following the return."""
+    has frames only while scrcpy runs. Stops a second after frames return."""
     import test_phone
 
     from gesture_control import phone as ph
 
     exe, args = test_phone._fake(tmp_path, mode=f"plan:{plan}")
-    monkeypatch.setattr(ph, "FIRST_FRAME_S", 0.0)
+    # A pause after scrcpy reports frames (really 0.2 s; longer here so the race
+    # always shows): frames already reach the
+    # reader during it, while the restart hasn't returned yet.
+    monkeypatch.setattr(ph, "FIRST_FRAME_S", 0.5)
     made = {"phones": [], "cameras": 0}
 
     class Phone(ph.PhoneCamera):
@@ -212,8 +215,9 @@ def _phone_app(monkeypatch, tmp_path, plan, local=""):
                 return None
             if self.dropped:
                 self.after += 1
-                if self.after > 15:
-                    raise KeyboardInterrupt
+                self.back_at = getattr(self, "back_at", None) or time.monotonic()
+                if self.after > 15 and time.monotonic() - self.back_at > 1.0:
+                    raise KeyboardInterrupt   # a second of frames after the return
             self.served += 1
             time.sleep(0.01)
             return np.zeros((480, 640, 3), np.uint8), time.monotonic(), seq + 1
